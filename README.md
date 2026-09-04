@@ -1,41 +1,90 @@
 # Seal
 
 A macOS signing program for git that shows what is about to be signed before the signature is made.
-Seal stands in for `op-ssh-sign` as `gpg.ssh.program`: on every signing request it opens a Review
-window listing where the request came from and what the object is, and asks for Touch ID. The private
-key stays in the 1Password SSH agent; Seal only gates the request (see `docs/adr/0001-gate-not-key-holder.md`).
+Seal is set as `gpg.ssh.program`: on every signing request it opens a Review window, laid out like
+terminal output, showing where the request came from (directory, branch, Claude Code session or terminal
+application), the author, the full commit message, and `diff --stat`, and asks for Touch ID inside the
+window. It exists so that a commit made by an agent on your behalf is approved with eyes open.
+
+The private key never leaves your SSH agent (1Password, or any agent behind `SSH_AUTH_SOCK`); Seal only
+gates the request and hands signing to `ssh-keygen -Y sign` (see `docs/adr/0001-gate-not-key-holder.md`).
+
+## Requirements
+
+- macOS 13 or later with Touch ID (the device password is the fallback), a Swift toolchain, `git`, `jq`
+- git already signing with SSH: `gpg.format=ssh` and `user.signingkey` set to a public key held by your
+  agent (or to a key file), with the same public key registered with GitHub as a **signing** key
 
 ## Install
 
 ```sh
-swift build -c release
-install -m 755 .build/release/seal ~/.local/bin/seal
-git config --global gpg.ssh.program ~/.local/bin/seal
+git clone https://github.com/d1r1/seal && cd seal
+scripts/install.sh
 ```
 
-Nothing else in the git config changes: `gpg.format`, `user.signingkey`, `gpg.ssh.allowedSignersFile`,
-and the signing key registered with GitHub stay as they are. Seal signs through the agent named by
-`SSH_AUTH_SOCK`, which on this machine is the 1Password agent.
+The script builds the release binary, installs `~/.local/bin/seal` and `~/.local/bin/seal-guard`, sets
+`git config --global gpg.ssh.program ~/.local/bin/seal`, and registers the guard as a Claude Code
+`PreToolUse` hook for Bash in `~/.claude/settings.json`. Nothing else in the git config changes. Run it
+again after pulling to update. There is no daemon and nothing to start after a reboot.
 
-To go back:
-
-```sh
-git config --global gpg.ssh.program /Applications/1Password.app/Contents/MacOS/op-ssh-sign
-```
+To go back, point `gpg.ssh.program` at your previous signing program (for 1Password:
+`/Applications/1Password.app/Contents/MacOS/op-ssh-sign`) or unset it.
 
 ## What the Review shows
 
-Session, Directory, Command, then for a commit Branch, Author (and Committer when different), Message,
-and one Changes block per parent; for a tag Tag, Tagged, Tagger, Message, and the tagged commit's Changes.
-Deny or closing the window leaves git without a signature, so no commit or tag is created.
+```
+~/dev/src/github.com/d1r1/seal  │  main  │  seal-touch-id
+Author:    d1r1 <me@d1r1.me>
+
+git commit "feat(review): lay the Review out like terminal output
+
+    Path, branch and session on one line, then author, then the
+    git command with the message inside the quotes."
+
+ Sources/seal/Review.swift | 120 ++++++++++-------
+ 1 file changed, 70 insertions(+), 50 deletions(-)
+
+[Touch ID]  Touch ID to sign · Esc to deny
+```
+
+The third item on the first line is the Claude Code session title when the request came from one, else
+the terminal application. A merge commit shows one stat block per parent; a tag shows `tag v1.0` in place
+of the branch, `Tagger:` and `Tagged:`, and the tagged commit's stat. Escape, closing the window, or a
+cancelled Touch ID leaves git without a signature, so no commit or tag is created. Every request gets
+its own Review; there is no "approve for a while". Overlapping requests open one window each and ask
+for Touch ID one at a time.
+
+When the agent holding the key is locked, it shows its own unlock prompt after Seal's; that is the
+agent's behaviour, not Seal's.
+
+## The guard hook
+
+`scripts/seal-guard.sh` refuses, from inside Claude Code, any git command that would sign around Seal:
+the flags that skip signing or pick another key, `gpgsign=false`, changes to `gpg.ssh.program`,
+`gpg.program`, `gpg.format`, `user.signingkey`, or `GIT_CONFIG_*` overrides in the environment. Only
+segments that actually run git are inspected, so prose mentioning a flag (a heredoc writing docs, a
+grep) passes. Reading the config (`git config --get ...`) is allowed. The agent sees a one-line reason
+and is told to ask the author.
+
+This protects against an agent's shortcut, not a hostile user; the real enforcement is a "require
+signed commits" rule on the repository.
+
+## Using it from an agent
+
+| Outcome | What the agent sees | What it should do |
+| --- | --- | --- |
+| Signed | exit 0 | carry on |
+| Denied (Escape, close, or Touch ID cancelled) | exit 1, `seal: signing denied`, `fatal: failed to write commit object` | report that the author declined; do not retry; ask why |
+| Not seen (author away) | the tool's own timeout kills git; no decision | say the Review was not answered; offer to retry when the author is back |
+| Key holder unreachable (agent not running or socket missing) | exit 2, `seal: ssh-keygen exited N: ...` | ask the author to start or unlock the agent, then retry |
 
 ## Exit statuses
 
 | Status | Meaning | stderr |
 | --- | --- | --- |
 | 0 | Signed | |
-| 1 | No Approval: denied, window closed, Touch ID failed, or git exited before a decision | `seal: signing denied` or `seal: git exited before a decision was made` |
-| 2 | Key holder failure: `ssh-keygen` could not sign (agent unreachable, 1Password locked) | `seal: ssh-keygen exited N: <ssh-keygen's message>` |
+| 1 | No Approval: denied, window closed, Touch ID cancelled, or git exited before a decision | `seal: signing denied` or `seal: git exited before a decision was made` |
+| 2 | Key holder failure: `ssh-keygen` could not sign (agent unreachable) | `seal: ssh-keygen exited N: <ssh-keygen's message>` |
 | 3 | Malformed request: unparseable object body or missing arguments | `seal: malformed request: <reason>` |
 
 Every other `-Y` mode (`verify`, `find-principals`, `check-novalidate`, `match-principals`) is handed to
@@ -45,6 +94,7 @@ Every other `-Y` mode (`verify`, `find-principals`, `check-novalidate`, `match-p
 
 ```sh
 swift test
+scripts/seal-guard.test.sh
 ```
 
 Tests create real temporary repositories and drive `SealCore` through its public interface. The Review
