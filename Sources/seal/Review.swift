@@ -2,8 +2,8 @@ import AppKit
 import LocalAuthentication
 import SealCore
 
-/// The window Seal shows for a Signing request: a flat list (Branch, Author, Committer when it differs,
-/// Message, one Changes block per parent) with Deny and
+/// The window Seal shows for a Signing request: a flat list (for a commit: Branch, Author, Committer when it
+/// differs, Message, one Changes block per parent; for a tag: Tag, Tagged, Tagger, Message, Changes) with Deny and
 /// Authorize with Touch ID. Raised by this process, floating and activated, gone when the process exits.
 /// Approval is a successful LocalAuthentication evaluation with the device-owner policy; anything else is denial.
 final class Review: NSObject, NSWindowDelegate {
@@ -30,15 +30,22 @@ final class Review: NSObject, NSWindowDelegate {
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Seal: sign commit"
+        window.title = "Seal: sign \(objectNoun)"
         window.level = .floating
         window.isReleasedWhenClosed = false
 
         var rows: [NSView] = []
-        rows += labelled("Branch", request.branch)
-        rows += labelled("Author", request.author)
-        if request.committer != request.author {
-            rows += labelled("Committer", request.committer)
+        switch request.object {
+        case .commit(let commit):
+            rows += labelled("Branch", request.branch)
+            rows += labelled("Author", commit.author)
+            if commit.committer != commit.author {
+                rows += labelled("Committer", commit.committer)
+            }
+        case .tag(let tag):
+            rows += labelled("Tag", tag.name)
+            rows += labelled("Tagged", "\(tag.object.prefix(7)) (\(tag.type))")
+            rows += labelled("Tagger", tag.tagger)
         }
         rows += labelled("Message", request.message, expanding: true)
         for changes in request.changes {
@@ -96,11 +103,21 @@ final class Review: NSObject, NSWindowDelegate {
         return [label, scroll]
     }
 
+    private var objectNoun: String {
+        switch request.object {
+        case .commit: return "commit"
+        case .tag: return "tag"
+        }
+    }
+
     /// "Changes" for a single parent, "Changes vs <short hash>" for each parent of a merge,
-    /// "Changes (root commit)" against the empty tree.
+    /// "Changes (root commit)" against the empty tree, and plain "Changes" for a tag on a non-commit.
     private func changesTitle(for changes: ChangeSummary) -> String {
-        guard let parent = changes.parent else { return "Changes (root commit)" }
-        guard request.parents.count > 1 else { return "Changes" }
+        guard let parent = changes.parent else {
+            if case .tag(let tag) = request.object, tag.type != "commit" { return "Changes" }
+            return "Changes (root commit)"
+        }
+        guard request.changes.count > 1 else { return "Changes" }
         return "Changes vs \(parent.prefix(7))"
     }
 
@@ -110,7 +127,7 @@ final class Review: NSObject, NSWindowDelegate {
 
     @objc private func approve(_ sender: Any?) {
         let context = LAContext()
-        context.localizedReason = "sign the commit shown in the Review"
+        context.localizedReason = "sign the \(objectNoun) shown in the Review"
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: context.localizedReason) { success, _ in
             DispatchQueue.main.async { self.finish(with: success ? .approval : .denial) }
         }

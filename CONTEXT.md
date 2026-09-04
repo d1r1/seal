@@ -17,7 +17,7 @@ The named unit of work a **Signing request** belongs to. For an agent it is the 
 _Avoid_: terminal, window, tab
 
 **Review**:
-The window Seal shows for a **Signing request**: the **Origin** and the object's branch, author, message, and change summary, as a flat list.
+The window Seal shows for a **Signing request**: the **Origin** and the object, as a flat list. For a commit that is the branch, author, message, and change summary; for a tag it is the tag name, the tagged object, the tagger, the message, and the tagged commit's change summary.
 _Avoid_: dialog, preview, confirmation screen
 
 **Approval**:

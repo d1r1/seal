@@ -72,6 +72,24 @@ struct Repository {
         }
     }
 
+    /// The tagged commit's own summaries (its tree against each of its parents), or one line saying what a
+    /// tag on anything else points at. The hash comes from the signed tag body; the commit's tree and parents
+    /// are read from the repository, since the tag body does not carry them.
+    func changes(ofTagged tag: SignedObject.Tag) -> [ChangeSummary] {
+        guard tag.type == "commit" else {
+            return [ChangeSummary(parent: nil, stat: "points at \(tag.type) \(tag.object.prefix(7))")]
+        }
+        do {
+            let tree = try git("rev-parse", "--verify", "\(tag.object)^{tree}").trimmingCharacters(in: .whitespacesAndNewlines)
+            let parents = try git("rev-parse", "\(tag.object)^@").split(separator: "\n").map(String.init)
+            return changes(from: parents, to: tree)
+        } catch let failed as GitFailed {
+            return [ChangeSummary(parent: nil, stat: "cannot read tagged commit \(tag.object.prefix(7)): \(failed.stderr)")]
+        } catch {
+            return [ChangeSummary(parent: nil, stat: "cannot read tagged commit \(tag.object.prefix(7)): \(error.localizedDescription)")]
+        }
+    }
+
     /// The empty tree's hash under the repository's object format.
     private func emptyTree() -> String {
         let hash = try? git("hash-object", "-t", "tree", "/dev/null")

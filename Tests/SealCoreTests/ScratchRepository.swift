@@ -133,3 +133,11 @@ extension ScratchRepository {
         try signingRequest(body: try git("cat-file", "commit", "HEAD"))
     }
 }
+
+extension ScratchRepository {
+    /// Makes an unsigned annotated tag on `target` and captures its body the way git hands it to the signing program.
+    func signingRequest(forTag name: String, on target: String = "HEAD", message: String) throws -> CapturedSigningRequest {
+        try git("-c", "tag.gpgsign=false", "tag", "-a", "-m", message, name, target)
+        return try signingRequest(body: try git("cat-file", "tag", name))
+    }
+}

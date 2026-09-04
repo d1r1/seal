@@ -22,6 +22,11 @@ final class ObjectDetailsTests: XCTestCase {
         return try XCTUnwrap(reviewed)
     }
 
+    private func commit(in reviewed: SigningRequest) throws -> SignedObject.Commit {
+        guard case .commit(let commit) = reviewed.object else { throw XCTSkip("not a commit: \(reviewed.object)") }
+        return commit
+    }
+
     func testBranchIsTheSymbolicRefOfHead() throws {
         try repo.commit(message: "root")
         try repo.git("checkout", "-q", "-b", "feature")
@@ -49,8 +54,9 @@ final class ObjectDetailsTests: XCTestCase {
 
         let reviewed = try review(try repo.signingRequestForHead())
 
-        XCTAssertTrue(reviewed.author.hasPrefix("Seal Test <test@seal>"), reviewed.author)
-        XCTAssertTrue(reviewed.committer.hasPrefix("Someone Else <else@example.com>"), reviewed.committer)
+        let commit = try commit(in: reviewed)
+        XCTAssertTrue(commit.author.hasPrefix("Seal Test <test@seal>"), commit.author)
+        XCTAssertTrue(commit.committer.hasPrefix("Someone Else <else@example.com>"), commit.committer)
     }
 
     func testChangesIsDiffStatBetweenParentTreeAndSignedTree() throws {
@@ -61,7 +67,7 @@ final class ObjectDetailsTests: XCTestCase {
 
         XCTAssertEqual(reviewed.changes.count, 1)
         let changes = try XCTUnwrap(reviewed.changes.first)
-        XCTAssertEqual(changes.parent, reviewed.parents.first)
+        XCTAssertEqual(changes.parent, try commit(in: reviewed).parents.first)
         XCTAssertTrue(changes.stat.contains("added.txt | 2 ++"), changes.stat)
         XCTAssertTrue(changes.stat.contains("1 file changed, 2 insertions(+)"), changes.stat)
         XCTAssertFalse(changes.stat.contains("kept.txt"), changes.stat)
@@ -72,7 +78,7 @@ final class ObjectDetailsTests: XCTestCase {
 
         let reviewed = try review(try repo.signingRequestForHead())
 
-        XCTAssertEqual(reviewed.parents, [])
+        XCTAssertEqual(try commit(in: reviewed).parents, [])
         XCTAssertEqual(reviewed.changes.count, 1)
         let changes = try XCTUnwrap(reviewed.changes.first)
         XCTAssertNil(changes.parent)
@@ -91,8 +97,9 @@ final class ObjectDetailsTests: XCTestCase {
 
         let reviewed = try review(try repo.signingRequestForHead())
 
-        XCTAssertEqual(reviewed.parents.count, 2)
-        XCTAssertEqual(reviewed.changes.map(\.parent), reviewed.parents)
+        let merge = try commit(in: reviewed)
+        XCTAssertEqual(merge.parents.count, 2)
+        XCTAssertEqual(reviewed.changes.map(\.parent), merge.parents)
         let againstOurs = try XCTUnwrap(reviewed.changes.first)
         XCTAssertTrue(againstOurs.stat.contains("theirs.txt | 1 +"), againstOurs.stat)
         XCTAssertFalse(againstOurs.stat.contains("ours.txt"), againstOurs.stat)

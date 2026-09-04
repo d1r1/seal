@@ -101,13 +101,13 @@ final class SigningRequestTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
     }
 
-    func testTagBodyIsRefusedAsUnsupportedNotAsCommit() throws {
-        let body = "object 4b825dc642cb6eb9a060e54bf8d69288fbee4904\ntype commit\ntag v1\ntagger A <a@b> 1 +0000\n\nv1\n"
+    func testTagBodyMissingRequiredHeaderExitsThree() throws {
+        let body = "object 4b825dc642cb6eb9a060e54bf8d69288fbee4904\ntype commit\ntag v1\n\nno tagger\n"
         let request = try repo.signingRequest(body: body)
 
         let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
 
         XCTAssertEqual(exit.status, 3)
-        XCTAssertTrue(try XCTUnwrap(exit.message).contains("tag"), "\(exit)")
+        XCTAssertTrue(try XCTUnwrap(exit.message).contains("tagger"), "\(exit)")
     }
 }
