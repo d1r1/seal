@@ -2,48 +2,102 @@ import Foundation
 import XCTest
 @testable import SealCore
 
-/// Until the Review exists, a Signing request is refused as malformed and nothing is written.
+/// A Signing request from git: the commit body is parsed, shown in the Review, and signed only after Approval.
 final class SigningRequestTests: XCTestCase {
-    private var stub: RecordingSSHKeygen!
-    private var bufferFile: URL!
-    private var signingRequest: [String] { ["-Y", "sign", "-n", "git", "-f", "/tmp/key.pub", bufferFile.path] }
+    private var repo: ScratchRepository!
 
     override func setUpWithError() throws {
-        stub = try RecordingSSHKeygen()
-        bufferFile = stub.directory.appendingPathComponent("buffer")
-        try Data("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n".utf8).write(to: bufferFile)
+        repo = try ScratchRepository()
     }
 
     override func tearDownWithError() throws {
-        try stub.remove()
+        try repo.remove()
     }
 
-    func testSignExitsWithMalformedRequestStatusAndOneLineMessage() throws {
-        let exit = Seal.run(arguments: signingRequest, environment: stub.environment)
+    func testReviewShowsCommitMessageVerbatimWithParagraphsAndTrailers() throws {
+        let message = """
+        Add the Review window
+
+        The body has a second paragraph
+        that wraps across lines.
+
+        Co-authored-by: Someone <someone@example.com>
+        Signed-off-by: Seal Test <test@seal>
+        """
+        let request = try repo.signingRequest(forCommitWithMessage: message)
+        var reviewed: SigningRequest?
+
+        _ = Seal.run(arguments: request.arguments, environment: repo.environment) { reviewed = $0; return .denial }
+
+        XCTAssertEqual(try XCTUnwrap(reviewed).message, message + "\n")
+    }
+
+    func testApprovalWritesSignatureNextToBufferFileThatVerifies() throws {
+        let request = try repo.signingRequest(forCommitWithMessage: "approved")
+
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment) { _ in .approval }
+
+        XCTAssertEqual(exit, Exit(status: 0))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: request.signatureFile.path))
+        XCTAssertNoThrow(try repo.verify(request))
+    }
+
+    func testDenialExitsOneWithSigningDeniedAndWritesNoSignature() throws {
+        let request = try repo.signingRequest(forCommitWithMessage: "denied")
+
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment) { _ in .denial }
+
+        XCTAssertEqual(exit, Exit(status: 1, message: "seal: signing denied"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
+    }
+
+    func testMalformedBodyExitsThreeWithoutOpeningReview() throws {
+        let request = try repo.signingRequest(body: "not a commit body at all")
+        var reviewOpened = false
+
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment) { _ in reviewOpened = true; return .approval }
 
         XCTAssertEqual(exit.status, 3)
+        XCTAssertTrue(try XCTUnwrap(exit.message).hasPrefix("seal: malformed request"), "\(exit)")
+        XCTAssertFalse(reviewOpened)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
+    }
+
+    func testBodyMissingRequiredHeaderExitsThree() throws {
+        let body = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\nno author or committer\n"
+        let request = try repo.signingRequest(body: body)
+
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment) { _ in .approval }
+
+        XCTAssertEqual(exit.status, 3)
+    }
+
+    func testMissingBufferFileArgumentExitsThree() throws {
+        let exit = Seal.run(arguments: ["-Y", "sign", "-n", "git", "-f", repo.privateKey.path],
+                            environment: repo.environment) { _ in .approval }
+
+        XCTAssertEqual(exit.status, 3)
+    }
+
+    func testUnreachableKeyHolderExitsTwoWithSSHKeygenMessage() throws {
+        let request = try repo.signingRequest(forCommitWithMessage: "no key")
+        let arguments = request.arguments.map { $0 == repo.privateKey.path ? "/nonexistent/key" : $0 }
+
+        let exit = Seal.run(arguments: arguments, environment: repo.environment) { _ in .approval }
+
+        XCTAssertEqual(exit.status, 2)
         let message = try XCTUnwrap(exit.message)
-        XCTAssertTrue(message.hasPrefix("seal: "), message)
-        XCTAssertFalse(message.contains("\n"), message)
+        XCTAssertTrue(message.hasPrefix("seal: ") && message.contains("/nonexistent/key"), message)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
     }
 
-    func testSignWritesNoSignatureFileAndNeverReachesSSHKeygen() throws {
-        _ = Seal.run(arguments: signingRequest, environment: stub.environment)
+    func testTagBodyIsRefusedAsUnsupportedNotAsCommit() throws {
+        let body = "object 4b825dc642cb6eb9a060e54bf8d69288fbee4904\ntype commit\ntag v1\ntagger A <a@b> 1 +0000\n\nv1\n"
+        let request = try repo.signingRequest(body: body)
 
-        let signatureFile = bufferFile.appendingPathExtension("sig")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: signatureFile.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stub.recordFile.path))
-    }
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment) { _ in .approval }
 
-    func testMissingModeExitsWithMalformedRequestStatus() {
-        XCTAssertEqual(Seal.run(arguments: [], environment: stub.environment).status, 3)
-        XCTAssertEqual(Seal.run(arguments: ["-Y"], environment: stub.environment).status, 3)
-        XCTAssertEqual(Seal.run(arguments: ["-f", "/tmp/key.pub"], environment: stub.environment).status, 3)
-    }
-
-    func testUnknownModeExitsWithMalformedRequestStatus() {
-        let exit = Seal.run(arguments: ["-Y", "encrypt", "-f", "/tmp/key.pub"], environment: stub.environment)
         XCTAssertEqual(exit.status, 3)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stub.recordFile.path))
+        XCTAssertTrue(try XCTUnwrap(exit.message).contains("tag"), "\(exit)")
     }
 }

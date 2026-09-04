@@ -17,7 +17,7 @@ final class PassThroughTests: XCTestCase {
         let arguments = ["-Y", "verify", "-n", "git", "-f", "/tmp/allowed_signers",
                          "-I", "me@d1r1.me", "-s", "/tmp/sig", "-r", "/tmp/buffer"]
 
-        let exit = Seal.run(arguments: arguments, environment: stub.environment)
+        let exit = Seal.run(arguments: arguments, environment: stub.environment) { _ in .denial }
 
         XCTAssertEqual(exit, Exit(status: 0))
         XCTAssertEqual(try stub.recordedArguments(), arguments)
@@ -25,26 +25,26 @@ final class PassThroughTests: XCTestCase {
 
     func testFindPrincipalsReachesSSHKeygenWithArgumentsUnchanged() throws {
         let arguments = ["-Y", "find-principals", "-f", "/tmp/allowed_signers", "-s", "/tmp/sig"]
-        _ = Seal.run(arguments: arguments, environment: stub.environment)
+        _ = Seal.run(arguments: arguments, environment: stub.environment) { _ in .denial }
         XCTAssertEqual(try stub.recordedArguments(), arguments)
     }
 
     func testCheckNovalidateReachesSSHKeygenWithArgumentsUnchanged() throws {
         let arguments = ["-Y", "check-novalidate", "-n", "git", "-s", "/tmp/sig", "-r", "/tmp/buffer"]
-        _ = Seal.run(arguments: arguments, environment: stub.environment)
+        _ = Seal.run(arguments: arguments, environment: stub.environment) { _ in .denial }
         XCTAssertEqual(try stub.recordedArguments(), arguments)
     }
 
     func testMatchPrincipalsReachesSSHKeygenWithArgumentsUnchanged() throws {
         let arguments = ["-Y", "match-principals", "-f", "/tmp/allowed_signers", "-I", "me@d1r1.me"]
-        _ = Seal.run(arguments: arguments, environment: stub.environment)
+        _ = Seal.run(arguments: arguments, environment: stub.environment) { _ in .denial }
         XCTAssertEqual(try stub.recordedArguments(), arguments)
     }
 
     func testPassThroughReportsSSHKeygenExitStatus() throws {
         let failing = try RecordingSSHKeygen(exitStatus: 255)
         defer { try? failing.remove() }
-        let exit = Seal.run(arguments: ["-Y", "verify"], environment: failing.environment)
+        let exit = Seal.run(arguments: ["-Y", "verify"], environment: failing.environment) { _ in .denial }
         XCTAssertEqual(exit, Exit(status: 255))
     }
 }
