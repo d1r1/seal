@@ -14,6 +14,8 @@ public struct Exit: Equatable {
     /// Exit statuses from the spec: 0 signed, 1 no Approval, 2 Key holder failure, 3 malformed request.
     static let signed = Exit(status: 0)
     static let denied = Exit(status: 1, message: "seal: signing denied")
+    /// Git went away while the Review was open; nothing was signed.
+    public static let abandoned = Exit(status: 1, message: "seal: git exited before a decision was made")
 
     static func keyHolderFailure(_ reason: String) -> Exit {
         Exit(status: 2, message: "seal: \(reason)")

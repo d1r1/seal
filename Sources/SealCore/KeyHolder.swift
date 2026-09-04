@@ -14,6 +14,8 @@ enum KeyHolder {
             return .keyHolderFailure(error.localizedDescription)
         }
         guard result.status == 0 else {
+            // ssh-keygen writes the signature only on success; make sure nothing stale or partial is left behind.
+            try? FileManager.default.removeItem(at: request.bufferFile.appendingPathExtension("sig"))
             return .keyHolderFailure("ssh-keygen exited \(result.status)" + (result.stderr.isEmpty ? "" : ": \(result.stderr)"))
         }
         return .signed
