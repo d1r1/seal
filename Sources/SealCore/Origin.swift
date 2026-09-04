@@ -10,22 +10,34 @@ public struct Origin: Equatable {
     public let directory: String
     /// The full argument list of the parent process (git), space-joined, or "unknown" when it cannot be read.
     public let command: String
+    /// The pid of the nearest application ancestor (the terminal or editor the request came from), when there
+    /// is one, so the Review can bring it forward.
+    public let applicationPid: pid_t?
+
+    public init(session: String, directory: String, command: String, applicationPid: pid_t? = nil) {
+        self.session = session
+        self.directory = directory
+        self.command = command
+        self.applicationPid = applicationPid
+    }
 
     static func resolve(environment: [String: String], workingDirectory: URL, processTable: ProcessTable,
                         sessionRecords: URL) -> Origin {
         let me = ProcessInfo.processInfo.processIdentifier
         let command = processTable.parent(me).flatMap(processTable.arguments)?.joined(separator: " ")
-        return Origin(session: session(environment: environment, processTable: processTable, from: me, sessionRecords: sessionRecords),
+        let application = processTable.nearestApplication(above: me)
+        return Origin(session: session(environment: environment, application: application, sessionRecords: sessionRecords),
                       directory: workingDirectory.path,
-                      command: command.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown")
+                      command: command.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown",
+                      applicationPid: application?.pid)
     }
 
-    private static func session(environment: [String: String], processTable: ProcessTable, from pid: pid_t,
+    private static func session(environment: [String: String], application: ProcessTable.Application?,
                                 sessionRecords: URL) -> String {
         if let id = environment["CLAUDE_CODE_SESSION_ID"] ?? environment["CLAUDE_SESSION_ID"], !id.isEmpty {
             return SessionRecords(directory: sessionRecords).title(of: id) ?? String(id.prefix(8))
         }
-        if let application = processTable.nearestApplication(above: pid) {
+        if let application {
             return "\(application.name) (pid \(application.pid))"
         }
         return "unknown"
