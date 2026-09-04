@@ -5,10 +5,9 @@ import Foundation
 /// Called only after Approval; the signature file is whatever `ssh-keygen` writes next to the buffer file.
 enum KeyHolder {
     static func sign(_ request: SigningRequest, environment: [String: String]) -> Exit {
-        let arguments = ["-Y", "sign", "-n", "git", "-f", request.publicKeyFile, request.bufferFile.path]
         let result: SSHKeygen.Result
         do {
-            result = try SSHKeygen.run(arguments, environment: environment, capturingStderr: true)
+            result = try SSHKeygen.run(request.arguments, environment: environment, capturingStderr: true)
         } catch let failure as SSHKeygen.CannotRun {
             return .keyHolderFailure(failure.reason)
         } catch {

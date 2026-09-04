@@ -10,7 +10,8 @@ public struct SigningRequest: Equatable {
     /// The commit message exactly as it will land in history, trailing newline included.
     public let message: String
 
-    let publicKeyFile: String
+    /// The arguments git gave for `-Y sign`, handed to the Key holder unchanged (`-U` selects the agent).
+    let arguments: [String]
     let bufferFile: URL
 
     struct Malformed: Error {
@@ -24,8 +25,10 @@ public struct SigningRequest: Equatable {
         var index = arguments.startIndex
         while index < arguments.endIndex {
             let argument = arguments[index]
-            if argument.hasPrefix("-") {
-                // Every `ssh-keygen -Y sign` option takes a value.
+            if argument == "-U" {
+                // Bare flag: sign with the agent that holds the key named by `-f`.
+            } else if argument.hasPrefix("-") {
+                // Every other `ssh-keygen -Y sign` option takes a value.
                 index += 1
                 guard index < arguments.endIndex else { throw Malformed(reason: "option \(argument) has no value") }
                 if argument == "-f" { publicKeyFile = arguments[index] }
@@ -34,7 +37,7 @@ public struct SigningRequest: Equatable {
             }
             index += 1
         }
-        guard let publicKeyFile else { throw Malformed(reason: "no -f key file given") }
+        guard publicKeyFile != nil else { throw Malformed(reason: "no -f key file given") }
         guard positional.count == 1, let bufferPath = positional.first else {
             throw Malformed(reason: "expected exactly one buffer file, got \(positional.count)")
         }
@@ -45,11 +48,11 @@ public struct SigningRequest: Equatable {
         guard let body = String(data: data, encoding: .utf8) else {
             throw Malformed(reason: "buffer file is not UTF-8")
         }
-        return try parse(commitBody: body, publicKeyFile: publicKeyFile, bufferFile: bufferFile)
+        return try parse(commitBody: body, arguments: arguments, bufferFile: bufferFile)
     }
 
     /// A commit body is a run of `key value` header lines, a blank line, and the message verbatim.
-    static func parse(commitBody body: String, publicKeyFile: String, bufferFile: URL) throws -> SigningRequest {
+    static func parse(commitBody body: String, arguments: [String], bufferFile: URL) throws -> SigningRequest {
         guard let separator = body.range(of: "\n\n") else {
             throw Malformed(reason: "commit body has no message separator")
         }
@@ -86,7 +89,7 @@ public struct SigningRequest: Equatable {
         guard let author else { throw Malformed(reason: "commit body has no author") }
         guard let committer else { throw Malformed(reason: "commit body has no committer") }
         return SigningRequest(tree: tree, parents: parents, author: author, committer: committer,
-                              message: message, publicKeyFile: publicKeyFile, bufferFile: bufferFile)
+                              message: message, arguments: arguments, bufferFile: bufferFile)
     }
 }
 

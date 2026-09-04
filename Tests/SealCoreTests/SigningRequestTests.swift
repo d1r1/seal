@@ -72,6 +72,16 @@ final class SigningRequestTests: XCTestCase {
         XCTAssertEqual(exit.status, 3)
     }
 
+    func testAgentFlagFromGitDoesNotSwallowBufferFile() throws {
+        let request = try repo.signingRequest(forCommitWithMessage: "with -U")
+        let arguments = Array(request.arguments.dropLast()) + ["-U", request.bufferFile.path]
+        var reviewed: SigningRequest?
+
+        _ = Seal.run(arguments: arguments, environment: repo.environment) { reviewed = $0; return .denial }
+
+        XCTAssertEqual(try XCTUnwrap(reviewed).message, "with -U\n")
+    }
+
     func testMissingBufferFileArgumentExitsThree() throws {
         let exit = Seal.run(arguments: ["-Y", "sign", "-n", "git", "-f", repo.privateKey.path],
                             environment: repo.environment) { _ in .approval }
