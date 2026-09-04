@@ -25,17 +25,25 @@ public struct Exit: Equatable {
 }
 
 public enum Seal {
+    public static let defaultSessionRecords = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude").appendingPathComponent("projects")
+
     /// Handles one invocation of `gpg.ssh.program` and says how the process should end.
     /// `review` shows the Signing request to the author and returns their Decision; the `seal` executable
     /// supplies the Review window and Touch ID, tests supply a closure. `workingDirectory` is where git ran Seal;
-    /// the branch and change summary are read from the repository there.
+    /// the branch and change summary are read from the repository there. `processTable` and `sessionRecords`
+    /// (Claude Code's transcripts, `~/.claude/projects` by default) feed the Origin; tests supply synthetic ones.
     public static func run(arguments: [String], environment: [String: String], workingDirectory: URL,
+                           processTable: ProcessTable = .live, sessionRecords: URL = defaultSessionRecords,
                            review: (SigningRequest) -> Decision) -> Exit {
         switch Mode.of(arguments) {
         case .signingRequest:
             let request: SigningRequest
             do {
-                request = try SigningRequest.parse(arguments: arguments, in: Repository(workingDirectory: workingDirectory, environment: environment))
+                let origin = Origin.resolve(environment: environment, workingDirectory: workingDirectory,
+                                            processTable: processTable, sessionRecords: sessionRecords)
+                request = try SigningRequest.parse(arguments: arguments, origin: origin,
+                                                   in: Repository(workingDirectory: workingDirectory, environment: environment))
             } catch let malformed as SigningRequest.Malformed {
                 return .malformedRequest(malformed.reason)
             } catch {

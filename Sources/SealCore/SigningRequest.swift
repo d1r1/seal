@@ -3,6 +3,8 @@ import Foundation
 /// One invocation of Seal by git to sign a single object, derived from the object body git handed over.
 /// Everything the Review shows comes from here.
 public struct SigningRequest: Equatable {
+    /// Where the request came from; shown first in the Review.
+    public let origin: Origin
     /// The commit or tag being signed, with its headers as git wrote them.
     public let object: SignedObject
     /// The message exactly as it will land in history, trailing newline included.
@@ -23,7 +25,7 @@ public struct SigningRequest: Equatable {
     }
 
     /// Reads the arguments git passes for `-Y sign` and parses the object body in the buffer file.
-    static func parse(arguments: [String], in repository: Repository) throws -> SigningRequest {
+    static func parse(arguments: [String], origin: Origin, in repository: Repository) throws -> SigningRequest {
         var publicKeyFile: String?
         var positional: [String] = []
         var index = arguments.startIndex
@@ -60,7 +62,7 @@ public struct SigningRequest: Equatable {
         case .tag(let tag):
             changes = repository.changes(ofTagged: tag)
         }
-        return SigningRequest(object: parsed.object, message: parsed.message, branch: repository.branch(),
+        return SigningRequest(origin: origin, object: parsed.object, message: parsed.message, branch: repository.branch(),
                               changes: changes, arguments: arguments, bufferFile: bufferFile)
     }
 }
