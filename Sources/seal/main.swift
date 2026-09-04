@@ -4,6 +4,7 @@ import SealCore
 let outcome = Seal.run(
     arguments: Array(CommandLine.arguments.dropFirst()),
     environment: ProcessInfo.processInfo.environment,
+    workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
     review: { request in Review(request).awaitDecision() }
 )
 if let message = outcome.message {

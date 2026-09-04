@@ -9,6 +9,11 @@ public struct SigningRequest: Equatable {
     public let committer: String
     /// The commit message exactly as it will land in history, trailing newline included.
     public let message: String
+    /// The symbolic ref of `HEAD` in the working directory, or "detached". Shown for orientation; not part of the signed body.
+    public let branch: String
+    /// One summary per parent (one against the empty tree for a root commit), computed from the hashes
+    /// in the signed body so it cannot differ from what is signed.
+    public let changes: [ChangeSummary]
 
     /// The arguments git gave for `-Y sign`, handed to the Key holder unchanged (`-U` selects the agent).
     let arguments: [String]
@@ -19,7 +24,7 @@ public struct SigningRequest: Equatable {
     }
 
     /// Reads the arguments git passes for `-Y sign` and parses the commit body in the buffer file.
-    static func parse(arguments: [String]) throws -> SigningRequest {
+    static func parse(arguments: [String], in repository: Repository) throws -> SigningRequest {
         var publicKeyFile: String?
         var positional: [String] = []
         var index = arguments.startIndex
@@ -48,13 +53,27 @@ public struct SigningRequest: Equatable {
         guard let body = String(data: data, encoding: .utf8) else {
             throw Malformed(reason: "buffer file is not UTF-8")
         }
-        return try parse(commitBody: body, arguments: arguments, bufferFile: bufferFile)
+        let commit = try CommitBody.parse(body)
+        return SigningRequest(tree: commit.tree, parents: commit.parents, author: commit.author,
+                              committer: commit.committer, message: commit.message,
+                              branch: repository.branch(),
+                              changes: repository.changes(from: commit.parents, to: commit.tree),
+                              arguments: arguments, bufferFile: bufferFile)
     }
+}
+
+/// The headers and message of a commit body, exactly as git wrote them.
+struct CommitBody {
+    let tree: String
+    let parents: [String]
+    let author: String
+    let committer: String
+    let message: String
 
     /// A commit body is a run of `key value` header lines, a blank line, and the message verbatim.
-    static func parse(commitBody body: String, arguments: [String], bufferFile: URL) throws -> SigningRequest {
+    static func parse(_ body: String) throws -> CommitBody {
         guard let separator = body.range(of: "\n\n") else {
-            throw Malformed(reason: "commit body has no message separator")
+            throw SigningRequest.Malformed(reason: "commit body has no message separator")
         }
         let headerLines = body[..<separator.lowerBound].split(separator: "\n", omittingEmptySubsequences: false)
         let message = String(body[separator.upperBound...])
@@ -65,11 +84,11 @@ public struct SigningRequest: Equatable {
         for line in headerLines {
             if line.hasPrefix(" ") {
                 // Continuation of a multi-line header (for example `gpgsig`); nothing here needs it.
-                guard lastKey != nil else { throw Malformed(reason: "commit header starts with a continuation line") }
+                guard lastKey != nil else { throw SigningRequest.Malformed(reason: "commit header starts with a continuation line") }
                 continue
             }
             guard let space = line.firstIndex(of: " ") else {
-                throw Malformed(reason: "commit header line without a value: \(line)")
+                throw SigningRequest.Malformed(reason: "commit header line without a value: \(line)")
             }
             let key = String(line[..<space])
             let value = String(line[line.index(after: space)...])
@@ -83,14 +102,20 @@ public struct SigningRequest: Equatable {
             }
         }
         guard let tree else {
-            if body.hasPrefix("object ") { throw Malformed(reason: "tag signing is not supported yet") }
-            throw Malformed(reason: "commit body has no tree")
+            if body.hasPrefix("object ") { throw SigningRequest.Malformed(reason: "tag signing is not supported yet") }
+            throw SigningRequest.Malformed(reason: "commit body has no tree")
         }
-        guard let author else { throw Malformed(reason: "commit body has no author") }
-        guard let committer else { throw Malformed(reason: "commit body has no committer") }
-        return SigningRequest(tree: tree, parents: parents, author: author, committer: committer,
-                              message: message, arguments: arguments, bufferFile: bufferFile)
+        guard let author else { throw SigningRequest.Malformed(reason: "commit body has no author") }
+        guard let committer else { throw SigningRequest.Malformed(reason: "commit body has no committer") }
+        return CommitBody(tree: tree, parents: parents, author: author, committer: committer, message: message)
     }
+}
+
+/// `diff --stat` between one parent's tree and the signed tree, as git prints it.
+public struct ChangeSummary: Equatable {
+    /// The parent hash from the signed body, or nil for a root commit (summary against the empty tree).
+    public let parent: String?
+    public let stat: String
 }
 
 /// The author's decision inside the Review. Only Approval leads to a signature.

@@ -116,3 +116,20 @@ extension ScratchRepository {
         }
     }
 }
+
+extension ScratchRepository {
+    /// Writes and stages the given files (the throwaway key lives in the same directory and stays untracked),
+    /// then commits unsigned.
+    func commit(message: String, files: [String: String] = [:]) throws {
+        for (name, contents) in files {
+            try contents.write(to: directory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            try git("add", "--", name)
+        }
+        try git("-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", message)
+    }
+
+    /// Captures the body of `HEAD` the way git hands it to the signing program.
+    func signingRequestForHead() throws -> CapturedSigningRequest {
+        try signingRequest(body: try git("cat-file", "commit", "HEAD"))
+    }
+}

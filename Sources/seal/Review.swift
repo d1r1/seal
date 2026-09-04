@@ -2,7 +2,8 @@ import AppKit
 import LocalAuthentication
 import SealCore
 
-/// The window Seal shows for a Signing request: a flat list (today only Message) with Deny and
+/// The window Seal shows for a Signing request: a flat list (Branch, Author, Committer when it differs,
+/// Message, one Changes block per parent) with Deny and
 /// Authorize with Touch ID. Raised by this process, floating and activated, gone when the process exits.
 /// Approval is a successful LocalAuthentication evaluation with the device-owner policy; anything else is denial.
 final class Review: NSObject, NSWindowDelegate {
@@ -27,30 +28,22 @@ final class Review: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Seal: sign commit"
         window.level = .floating
         window.isReleasedWhenClosed = false
 
-        let label = NSTextField(labelWithString: "Message")
-        label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
-
-        let message = NSTextView()
-        message.isEditable = false
-        message.isSelectable = true
-        message.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        message.string = request.message
-        message.textContainerInset = NSSize(width: 4, height: 4)
-        message.autoresizingMask = [.width]
-        message.isVerticallyResizable = true
-        message.textContainer?.widthTracksTextView = true
-        let scroll = NSScrollView()
-        scroll.documentView = message
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        var rows: [NSView] = []
+        rows += labelled("Branch", request.branch)
+        rows += labelled("Author", request.author)
+        if request.committer != request.author {
+            rows += labelled("Committer", request.committer)
+        }
+        rows += labelled("Message", request.message, expanding: true)
+        for changes in request.changes {
+            rows += labelled(changesTitle(for: changes), changes.stat.isEmpty ? "(no changes)" : changes.stat)
+        }
 
         let deny = NSButton(title: "Deny", target: self, action: #selector(deny(_:)))
         deny.keyEquivalent = "\u{1b}"
@@ -60,18 +53,55 @@ final class Review: NSObject, NSWindowDelegate {
         buttons.orientation = .horizontal
         buttons.alignment = .centerY
 
-        let column = NSStackView(views: [label, scroll, buttons])
+        let column = NSStackView(views: rows + [buttons])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
         column.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         column.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -32),
-            buttons.trailingAnchor.constraint(equalTo: column.trailingAnchor, constant: -16),
-        ])
+        NSLayoutConstraint.activate(
+            rows.compactMap { $0 as? NSScrollView }.map { $0.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -32) }
+                + [buttons.trailingAnchor.constraint(equalTo: column.trailingAnchor, constant: -16)]
+        )
         window.contentView = column
         return window
+    }
+
+    /// A bold title and a read-only monospaced text below it. Expanding rows take the spare height.
+    private func labelled(_ title: String, _ text: String, expanding: Bool = false) -> [NSView] {
+        let label = NSTextField(labelWithString: title)
+        label.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+
+        let view = NSTextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        view.string = text
+        view.textContainerInset = NSSize(width: 4, height: 4)
+        view.autoresizingMask = [.width]
+        view.isVerticallyResizable = true
+        view.textContainer?.widthTracksTextView = true
+        let scroll = NSScrollView()
+        scroll.documentView = view
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        if expanding {
+            scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        } else {
+            let lines = max(1, min(text.split(separator: "\n", omittingEmptySubsequences: false).count, 12))
+            let lineHeight = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular).boundingRectForFont.height
+            scroll.heightAnchor.constraint(equalToConstant: CGFloat(lines) * lineHeight + 12).isActive = true
+        }
+        return [label, scroll]
+    }
+
+    /// "Changes" for a single parent, "Changes vs <short hash>" for each parent of a merge,
+    /// "Changes (root commit)" against the empty tree.
+    private func changesTitle(for changes: ChangeSummary) -> String {
+        guard let parent = changes.parent else { return "Changes (root commit)" }
+        guard request.parents.count > 1 else { return "Changes" }
+        return "Changes vs \(parent.prefix(7))"
     }
 
     @objc private func deny(_ sender: Any?) {
