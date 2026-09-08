@@ -11,9 +11,23 @@ gates the request and hands signing to `ssh-keygen -Y sign` (see `docs/adr/0001-
 
 ## Requirements
 
-- macOS 13 or later with Touch ID (the device password is the fallback), a Swift toolchain, `git`, `jq`
-- git already signing with SSH: `gpg.format=ssh` and `user.signingkey` set to a public key held by your
+- macOS 13 or later with Touch ID (the device password is the fallback)
+- A Swift toolchain (`swift --version`; Xcode or the Command Line Tools provide it), `git`, and `jq`
+- An SSH agent holding your signing key, reachable through `SSH_AUTH_SOCK` (1Password, `ssh-agent`,
+  Secretive, or any other)
+- git already signing with SSH: `gpg.format=ssh` and `user.signingkey` set to a public key held by that
   agent (or to a key file), with the same public key registered with GitHub as a **signing** key
+
+Check the last two in one go:
+
+```sh
+git config --get gpg.format          # expect: ssh
+git config --get user.signingkey     # expect: a public key, or a path to one
+ssh-add -l                           # expect: your signing key listed
+```
+
+If `gpg.format` is not `ssh`, set up SSH commit signing first. Seal replaces the signing *program*; it
+does not set signing up for you.
 
 ## Install
 
@@ -22,18 +36,66 @@ git clone https://github.com/d1r1/seal && cd seal
 scripts/install.sh
 ```
 
-The script builds the release binary, installs `~/.local/bin/seal` and `~/.local/bin/seal-guard`, sets
-`git config --global gpg.ssh.program ~/.local/bin/seal`, and registers the guard as a Claude Code
-`PreToolUse` hook for Bash in `~/.claude/settings.json`. Nothing else in the git config changes. Run it
-again after pulling to update. There is no daemon and nothing to start after a reboot.
+Run it again after pulling to update. There is no daemon and nothing to start after a reboot.
 
-To go back, point `gpg.ssh.program` at your previous signing program (for 1Password:
-`/Applications/1Password.app/Contents/MacOS/op-ssh-sign`) or unset it.
+### What the installer changes on your machine
+
+It touches three things outside the clone, and nothing else:
+
+| Change | Where | Override |
+| --- | --- | --- |
+| Installs the `seal` and `seal-guard` binaries | `~/.local/bin/` | `SEAL_BIN_DIR` |
+| Points `gpg.ssh.program` at `~/.local/bin/seal` | your **global** git config | — |
+| Adds `seal-guard` as a `PreToolUse` hook for Bash | `~/.claude/settings.json` | `CLAUDE_SETTINGS` |
+
+Your `user.signingkey`, `gpg.format`, `commit.gpgsign`, `tag.gpgsign`, and `allowed_signers` are left
+alone. If you do not use Claude Code, the hook is inert; to skip it entirely, install by hand:
+
+```sh
+swift build -c release
+install -m 755 .build/release/seal ~/.local/bin/seal
+git config --global gpg.ssh.program ~/.local/bin/seal
+```
+
+## Install with an agent
+
+If you would rather have a coding agent do it, paste this into a session:
+
+```
+Install Seal (https://github.com/d1r1/seal), a macOS git signing gate, on this machine.
+
+1. Check the prerequisites and stop and tell me if any is missing: macOS 13+, swift, git, jq,
+   gpg.format is "ssh", user.signingkey is set, and `ssh-add -l` lists that key.
+2. Record my current global gpg.ssh.program setting so I can roll back.
+3. Clone the repo somewhere sensible, read its README, and run scripts/install.sh.
+4. Report exactly what changed: the binaries installed, the git config line set, and whether the
+   guard hook was registered in ~/.claude/settings.json.
+5. Verify with a signed commit in a throwaway repository. A Review window will open and ask for
+   Touch ID. I have to approve it by hand; you cannot. If I deny it, seal exits 1 with
+   "seal: signing denied" and no commit is created: report that and do not retry.
+6. Show me `git log --show-signature -1` from that repository.
+```
+
+Two things the agent should know before it starts. The install changes your **global** git config, so it
+affects every repository on the machine. And from the moment it succeeds, every commit the agent makes,
+including the ones it makes for itself, needs your finger on the sensor: the agent cannot verify its own
+install unattended. That is the point of the tool, not a limitation of it.
+
+## Uninstall
+
+```sh
+git config --global --unset gpg.ssh.program
+rm -f ~/.local/bin/seal ~/.local/bin/seal-guard
+```
+
+To go back to a previous signing program instead, point `gpg.ssh.program` at it (for 1Password:
+`/Applications/1Password.app/Contents/MacOS/op-ssh-sign`). Remove the `seal-guard` entry from the
+`hooks.PreToolUse` array in `~/.claude/settings.json` by hand.
 
 ## What the Review shows
 
 ```
-~/dev/src/github.com/d1r1/seal  │  main  │  seal-touch-id
+~/src/seal  │  main  │  seal-touch-id
 Author:    d1r1 <me@d1r1.me>
 
 git commit "feat(review): lay the Review out like terminal output
