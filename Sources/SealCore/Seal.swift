@@ -35,8 +35,11 @@ public enum Seal {
     /// supplies the Review window and Touch ID, tests supply a closure. `workingDirectory` is where git ran Seal;
     /// the branch and change summary are read from the repository there. `processTable` and `sessionRecords`
     /// (Claude Code's transcripts, `~/.claude/projects` by default) feed the Origin; tests supply synthetic ones.
+    /// `group` is where the group key and Seal's share live and `helper` is the `seal-frost` executable; tests
+    /// supply a temporary directory and the crate's build. No environment variable selects either.
     public static func run(arguments: [String], environment: [String: String], workingDirectory: URL,
                            processTable: ProcessTable = .live, sessionRecords: URL = defaultSessionRecords,
+                           group: GroupKey = GroupKey(), helper: FrostHelper = .nextTo(Bundle.main.executableURL ?? URL(fileURLWithPath: "/")),
                            review: (SigningRequest) -> Decision) -> Exit {
         switch Mode.of(arguments) {
         case .signingRequest:
@@ -45,17 +48,26 @@ public enum Seal {
                 let origin = Origin.resolve(environment: environment, workingDirectory: workingDirectory,
                                             processTable: processTable, sessionRecords: sessionRecords)
                 request = try SigningRequest.parse(arguments: arguments, origin: origin,
-                                                   in: Repository(workingDirectory: workingDirectory, environment: environment))
+                                                   in: Repository(workingDirectory: workingDirectory, environment: environment),
+                                                   group: group)
             } catch let malformed as SigningRequest.Malformed {
                 return .malformedRequest(malformed.reason)
             } catch {
                 return .malformedRequest(error.localizedDescription)
             }
-            switch review(request) {
-            case .approval:
+            switch (review(request), request.keyHolder) {
+            case (.approval(nil), .personal):
                 return KeyHolder.sign(request, environment: environment)
-            case .denial:
+            case (.approval(let share?), .group):
+                return GroupKeyHolder.sign(request, share: share, group: group, helper: helper)
+            case (.approval(nil), .group):
+                return .keyHolderFailure("the Approval carried no user share for the group key")
+            case (.approval(_?), .personal):
+                return .keyHolderFailure("the Approval carried a user share for the personal key")
+            case (.denial, _):
                 return .denied
+            case (.failure(let reason), _):
+                return .keyHolderFailure(reason)
             }
         case .passThrough:
             return PassThrough.run(arguments: arguments, environment: environment)

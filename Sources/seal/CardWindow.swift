@@ -3,33 +3,48 @@ import LocalAuthentication
 import LocalAuthenticationEmbeddedUI
 import SealCore
 
-/// The window Seal shows for a Signing request, laid out like terminal output:
+/// The window Seal shows for a Signing request: the approval card (ADR 0002, point 5), laid out like
+/// terminal output:
 ///
-///     ~/dev/src/github.com/d1r1/seal │ main │ seal-touch-id
-///     Author: d1r1 <me@d1r1.me>
-///
-///     git commit "subject
-///
-///         body"
-///
+///     🔏 Sign?  fluent-connect-service · feat/widget
+///     ~/dev/ws/fluent-connect-service  │  design: Seal signs with FROST
+///     Author:    d1r1 <me@d1r1.me>
+///     ────────────────────────────────────────
+///     🤖 implementer  ✅ stub: not checked
+///     🔍 reviewer     ✅ stub: not checked
+///     🧑 you          ⏳ Touch ID
+///     ────────────────────────────────────────
+///     📝 feat(widget): read Privy id from session        ▸ expand
+///     🐛 Problem  widget asked Privy twice
+///     💡 Why      one source (session)
+///     ⚠️ Risks    —
+///     📊 4 files · +70 −50 · parent a1b2c3d → tree e4f5a6b
 ///     <diff --stat as git prints it>
 ///
 ///     [Touch ID glyph]  Touch ID to sign · Esc to deny
 ///
-/// Approval is a successful LocalAuthentication evaluation with the device-owner policy; anything else is denial.
-/// The Touch ID prompt is raised as soon as the window becomes key, so the finger is the only gesture; Escape,
-/// cancelling the prompt, or closing the window is Denial. Return asks again after an accidental dismissal.
-/// Only the key window prompts, so overlapping Reviews ask one at a time.
-final class Review: NSObject, NSWindowDelegate {
+/// Touch ID is the only action. For the group key it is the Secure Enclave unwrapping the user's share
+/// through the window's own `LAContext`: success is the Approval and carries the share; a cancelled prompt is
+/// Denial; any other unwrap error is reported as a Key holder failure. For the personal key it is a
+/// LocalAuthentication evaluation with the device-owner policy, as before. The prompt is raised as soon as
+/// the window becomes key; Escape, cancelling, or closing the window is Denial. Return asks again.
+/// Only the key window prompts, so overlapping cards ask one at a time.
+final class CardWindow: NSObject, NSWindowDelegate {
     private let request: SigningRequest
+    private let card: Card
+    private let group: GroupKey
     private var decision: Decision?
     private var window: NSWindow!
-    /// One context for the life of the window; the embedded glyph is bound to it.
+    /// One context for the life of the window; the embedded glyph and the enclave key are bound to it.
     private let prompt = LAContext()
     private var prompting = false
+    private var bodyView: NSView?
+    private var expander: NSButton?
 
-    init(_ request: SigningRequest) {
+    init(_ request: SigningRequest, group: GroupKey) {
         self.request = request
+        self.card = Card(request)
+        self.group = group
     }
 
     /// Shows the window and blocks until the author decides or the window closes.
@@ -59,17 +74,46 @@ final class Review: NSObject, NSWindowDelegate {
         }
     }
 
-    /// One evaluation at a time per window: a second call while one is running does nothing.
+    /// One prompt at a time per window: a second call while one is running does nothing.
     private func askForTouchID() {
         guard decision == nil, !prompting else { return }
         prompting = true
         prompt.localizedCancelTitle = "Deny"
-        prompt.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "sign the \(objectNoun) shown in the Review") { success, _ in
-            DispatchQueue.main.async {
-                self.prompting = false
-                self.finish(with: success ? .approval : .denial)
+        let reason = "sign the \(objectNoun) shown in the card"
+        switch request.keyHolder {
+        case .group:
+            // The enclave raises the prompt itself during the key agreement; it blocks, so it runs off the main thread.
+            prompt.localizedReason = reason
+            DispatchQueue.global(qos: .userInitiated).async {
+                let outcome: Decision
+                do {
+                    outcome = .approval(try UserShare.unwrap(self.group, context: self.prompt))
+                } catch {
+                    outcome = Self.isCancellation(error) ? .denial : .failure("cannot unwrap the user share: \(error)")
+                }
+                DispatchQueue.main.async {
+                    self.prompting = false
+                    self.finish(with: outcome)
+                }
+            }
+        case .personal:
+            prompt.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
+                DispatchQueue.main.async {
+                    self.prompting = false
+                    self.finish(with: success ? .approval() : .denial)
+                }
             }
         }
+    }
+
+    /// The user's cancel (Deny, Escape on the system prompt, or the context invalidated by Escape here) is
+    /// Denial; everything else about the enclave or the file is a failure worth reporting.
+    private static func isCancellation(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == LAErrorDomain {
+            return [LAError.userCancel, .appCancel, .systemCancel, .userFallback].map(\.rawValue).contains(nsError.code)
+        }
+        return "\(error)".lowercased().contains("cancel")
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -93,7 +137,7 @@ final class Review: NSObject, NSWindowDelegate {
     private static let margin: CGFloat = 20
     private static let body = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private static let small = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    private static let statLimit = 15
+    private static let statLimit = 12
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 300),
@@ -102,8 +146,23 @@ final class Review: NSObject, NSWindowDelegate {
         window.level = .floating
         window.isReleasedWhenClosed = false
 
-        var sections: [NSView] = [text(whereLine, font: Self.body, color: .secondaryLabelColor), text(whoLines, font: Self.body)]
-        sections.append(text(commandLines, font: Self.body))
+        var sections: [NSView] = [
+            text("🔏 Sign?  \(card.header)", font: Self.body),
+            text(whereLine, font: Self.small, color: .secondaryLabelColor),
+            text(whoLines, font: Self.body),
+            rule(),
+            text((card.attestations + ["🧑 you          ⏳ Touch ID"]).joined(separator: "\n"), font: Self.body),
+            rule(),
+            titleRow(),
+        ]
+        let body = text(card.body.map { $0.split(separator: "\n", omittingEmptySubsequences: false).map { "   \($0)" }.joined(separator: "\n") } ?? "",
+                        font: Self.small, color: .secondaryLabelColor)
+        body.isHidden = true
+        bodyView = body
+        sections.append(body)
+        sections.append(text(["🐛 Problem  \(card.problem)", "💡 Why      \(card.why)", "⚠️ Risks    \(card.risks)"].joined(separator: "\n"),
+                             font: Self.body))
+        sections.append(text("📊 \(card.summary)", font: Self.body))
         for changes in request.changes {
             sections.append(statBlock(changes))
         }
@@ -112,29 +171,53 @@ final class Review: NSObject, NSWindowDelegate {
         let column = NSStackView(views: sections)
         column.orientation = .vertical
         column.alignment = .leading
-        column.spacing = 14
+        column.spacing = 12
         column.setCustomSpacing(2, after: sections[0])
+        column.setCustomSpacing(2, after: sections[1])
+        column.setCustomSpacing(4, after: sections[6])
         column.edgeInsets = NSEdgeInsets(top: Self.margin, left: Self.margin, bottom: Self.margin, right: Self.margin)
         column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate(
             [column.widthAnchor.constraint(equalToConstant: Self.width)]
                 + sections.map { $0.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -2 * Self.margin) }
         )
-        column.layoutSubtreeIfNeeded()
-        let height = min(column.fittingSize.height, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
-        window.setContentSize(NSSize(width: Self.width, height: height))
         window.contentView = column
+        fit(window, to: column)
         return window
     }
 
-    /// `~/path │ branch │ session`; a tag shows its name in place of the branch.
+    private func fit(_ window: NSWindow, to column: NSStackView) {
+        column.layoutSubtreeIfNeeded()
+        let height = min(column.fittingSize.height, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
+        window.setContentSize(NSSize(width: Self.width, height: height))
+    }
+
+    /// `📝 <title>` with `▸ expand` when the message has a body.
+    private func titleRow() -> NSView {
+        let title = text("📝 \(card.title)", font: Self.body)
+        guard card.body != nil else { return title }
+        let button = NSButton(title: "▸ expand", target: self, action: #selector(toggleBody))
+        button.bezelStyle = .inline
+        button.font = Self.small
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        expander = button
+        let row = NSStackView(views: [title, button])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 12
+        return row
+    }
+
+    @objc private func toggleBody() {
+        guard let bodyView, let expander else { return }
+        bodyView.isHidden.toggle()
+        expander.title = bodyView.isHidden ? "▸ expand" : "▾ collapse"
+        if let column = window.contentView as? NSStackView { fit(window, to: column) }
+    }
+
+    /// `~/path │ session`: the Origin, for orientation.
     private var whereLine: String {
-        let place: String
-        switch request.object {
-        case .commit: place = request.branch
-        case .tag(let tag): place = "tag \(tag.name)"
-        }
-        return [abbreviated(request.origin.directory), place, request.origin.session].joined(separator: "  \u{2502}  ")
+        [abbreviated(request.origin.directory), request.origin.session].joined(separator: "  \u{2502}  ")
     }
 
     private var whoLines: String {
@@ -148,18 +231,11 @@ final class Review: NSObject, NSWindowDelegate {
         }
     }
 
-    /// `git commit "subject` … `body"`: the signed message verbatim inside the quotes, body indented four spaces.
-    private var commandLines: String {
-        let verb: String
-        switch request.object {
-        case .commit: verb = "git commit"
-        case .tag(let tag): verb = "git tag \(tag.name)"
-        }
-        let message = request.message.trimmingCharacters(in: .newlines)
-        let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let subject = lines.first else { return "\(verb) \"\"" }
-        let rest = lines.dropFirst().map { $0.isEmpty ? "" : "    \($0)" }
-        return "\(verb) \"" + ([String(subject)] + rest).joined(separator: "\n") + "\""
+    private func rule() -> NSView {
+        let line = NSBox()
+        line.boxType = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        return line
     }
 
     /// `diff --stat` as git prints it; scrolls past `statLimit` lines. Merges label each block by parent.

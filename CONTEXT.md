@@ -1,6 +1,6 @@
 # Seal
 
-A macOS signing program for git that shows what is about to be signed before the signature is made. It stands in for `op-ssh-sign` as `gpg.ssh.program`, so that the approval step is also the review step, especially when an agent runs `git commit` on the author's behalf.
+A macOS signing program for git that shows what is about to be signed before the signature is made. It stands in for `op-ssh-sign` as `gpg.ssh.program`, so that the approval step is also the review step, especially when an agent runs `git commit` on the author's behalf. Since ADR 0002 it also holds one share of a threshold group key and coordinates the group's signature.
 
 ## Language
 
@@ -16,17 +16,46 @@ _Avoid_: caller, context, source
 The named unit of work a **Signing request** belongs to. For an agent it is the Claude Code session, shown by its title; for a human it is the terminal application.
 _Avoid_: terminal, window, tab
 
-**Review**:
-The window Seal shows for a **Signing request**: the **Origin** and the object, as a flat list. For a commit that is the branch, author, message, and change summary; for a tag it is the tag name, the tagged object, the tagger, the message, and the tagged commit's change summary.
-_Avoid_: dialog, preview, confirmation screen
+**Card**:
+The window Seal shows for a **Signing request**: the **Origin**, the **Attestation** lines, the message collapsed to its title, the Problem, Why and Risks trailers, the change counts with the parent and tree hashes, and the change summary. It replaced the **Review** (ADR 0002); the word Review names the pre-0002 window only.
+_Avoid_: dialog, preview, confirmation screen, review
 
 **Approval**:
-The author's decision to sign, given inside the **Review** with Touch ID (or the device password when Touch ID is unavailable). Without it no signature is made and git creates no object.
+The author's decision to sign, given inside the **Card** with Touch ID (or the device password when Touch ID is unavailable). For the **Group key** it is the Secure Enclave unwrapping the **User share**, and it carries that share for one signature; for the personal key it is a LocalAuthentication evaluation. Without it no signature is made and git creates no object.
 _Avoid_: passkey, authorization, consent
 
 **Key holder**:
-The program that owns the private key and produces the signature once **Approval** is given. Today it is the 1Password SSH agent; Seal never sees the key.
+What produces the signature once **Approval** is given. For the **Group key** it is the FROST group: Seal's **Mac share** and the **User share**, aggregated by the helper `seal-frost`. For the personal key it is the 1Password SSH agent through `ssh-keygen -Y sign`, and Seal never sees that key. The key git names with `-f` selects the holder.
 _Avoid_: signer, backend, key store
+
+**Group key**:
+One Ed25519 public key whose private key exists only as three FROST **Shares**, threshold two. Registered on GitHub as a signing key and listed in `allowed_signers` like any `ssh-ed25519` key; its signatures are ordinary Ed25519 signatures.
+_Avoid_: threshold key, shared key, multisig
+
+**Share**:
+One of the three FROST key packages of the **Group key**: the **User share** (🧑), the **Mac share** (🖥), and the **Recovery share** (🧊). Any two sign; only the first two are on the signing path.
+_Avoid_: fragment, piece, key part
+
+**User share**:
+The author's **Share**. On the Mac it exists only as a **Sealed share**; a phone copy comes later.
+
+**Mac share**:
+Seal's **Share**, a 0600 file under `~/Library/Application Support/seal/`. Alone it signs nothing.
+
+**Recovery share**:
+The third **Share**, printed once by `seal setup` for the author to store offline (1Password). Never written by Seal, never on the signing path.
+
+**Sealed share**:
+The **User share** encrypted to a Secure Enclave P-256 key created with `biometryCurrentSet`, so that unwrapping needs Touch ID each time. The file `share-user.sealed` holds the enclave key's blob, the ephemeral public key and the ciphertext.
+_Avoid_: wrapped share, encrypted share, blob
+
+**Attestation**:
+A stage's signed statement over the commit's parent and tree (implementer, reviewer), shown at the top of the **Card**. In the current step the two lines are a stub that always shows ✅ and says "stub: not checked"; nothing is gated on them yet.
+_Avoid_: approval, sign-off, review result
+
+**Helper**:
+The `seal-frost` executable next to `seal`: the dealer that generates the **Group key** and the coordinator that runs both FROST rounds and writes the SSHSIG. **Shares** reach it through pipes only.
+_Avoid_: signer, backend
 
 **Pass-through**:
 Any `gpg.ssh.program` mode other than signing (`verify`, `find-principals`, `check-novalidate`, `match-principals`), which Seal hands to `ssh-keygen` unchanged.
@@ -34,9 +63,11 @@ _Avoid_: proxy, delegation
 
 ## Relationships
 
-- A **Signing request** gets exactly one **Review** and is signed only after one **Approval**; there is no approval that covers more than one request.
-- **Approval** gates; the **Key holder** signs. Seal is the gate, not the holder.
+- A **Signing request** gets exactly one **Card** and is signed only after one **Approval**; there is no approval that covers more than one request.
+- **Approval** gates; the **Key holder** signs. For the **Group key** Seal is both the gate and one of the two **Share** holders on the path; the **User share** is the author's, unlocked by the sensor, so no signature exists without the author.
+- The **Group key**'s signatures and the personal key's are verified the same way; the personal key stays registered for its past signatures and for emergencies performed by hand.
 
 ## Flagged ambiguities
 
-- "passkey" was used for **Approval**. Resolved: **Approval** is Touch ID inside the **Review**, not a WebAuthn credential; the word passkey is not used.
+- "passkey" was used for **Approval**. Resolved: **Approval** is Touch ID inside the **Card**, not a WebAuthn credential; the word passkey is not used.
+- "Review" survives in code comments and Issues written before ADR 0002. Resolved: it names the old window; new text says **Card**.

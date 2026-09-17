@@ -15,6 +15,8 @@ public struct SigningRequest: Equatable {
     /// commit's own summaries, or a single line saying what the tag points at. Computed from the hashes in the
     /// signed body so it cannot differ from what is signed.
     public let changes: [ChangeSummary]
+    /// The Key holder this request goes to: the group when `-f` names the group key, the personal key otherwise.
+    public let keyHolder: KeyHolderKind
 
     /// The arguments git gave for `-Y sign`, handed to the Key holder unchanged (`-U` selects the agent).
     let arguments: [String]
@@ -25,7 +27,7 @@ public struct SigningRequest: Equatable {
     }
 
     /// Reads the arguments git passes for `-Y sign` and parses the object body in the buffer file.
-    static func parse(arguments: [String], origin: Origin, in repository: Repository) throws -> SigningRequest {
+    static func parse(arguments: [String], origin: Origin, in repository: Repository, group: GroupKey) throws -> SigningRequest {
         var publicKeyFile: String?
         var positional: [String] = []
         var index = arguments.startIndex
@@ -43,7 +45,7 @@ public struct SigningRequest: Equatable {
             }
             index += 1
         }
-        guard publicKeyFile != nil else { throw Malformed(reason: "no -f key file given") }
+        guard let publicKeyFile else { throw Malformed(reason: "no -f key file given") }
         guard positional.count == 1, let bufferPath = positional.first else {
             throw Malformed(reason: "expected exactly one buffer file, got \(positional.count)")
         }
@@ -63,7 +65,8 @@ public struct SigningRequest: Equatable {
             changes = repository.changes(ofTagged: tag)
         }
         return SigningRequest(origin: origin, object: parsed.object, message: parsed.message, branch: repository.branch(),
-                              changes: changes, arguments: arguments, bufferFile: bufferFile)
+                              changes: changes, keyHolder: group.isGroupKey(fileAt: publicKeyFile) ? .group : .personal,
+                              arguments: arguments, bufferFile: bufferFile)
     }
 }
 
@@ -149,8 +152,20 @@ public struct ChangeSummary: Equatable {
     public let stat: String
 }
 
-/// The author's decision inside the Review. Only Approval leads to a signature.
+/// The author's decision inside the card. Only Approval leads to a signature. For the group key the Approval
+/// is the unwrap of the user's share and carries it (ADR 0002, point 4); for the personal key it carries nothing.
+/// `failure` is the card reporting that it could not take the decision at all (the sealed share would not open
+/// for a reason other than the user's cancel); it ends as a Key holder failure.
 public enum Decision {
-    case approval
+    case approval(SecretShare? = nil)
     case denial
+    case failure(String)
+}
+
+/// Which Key holder a Signing request selects, by the key git named with `-f`.
+public enum KeyHolderKind: Equatable {
+    /// The FROST group: Seal's share plus the user's share, aggregated by the helper.
+    case group
+    /// The SSH agent behind `SSH_AUTH_SOCK` (or a key file), through `ssh-keygen -Y sign`, as in ADR 0001.
+    case personal
 }

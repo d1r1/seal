@@ -29,7 +29,7 @@ final class FailureSemanticsTests: XCTestCase {
         var environment = repo.environment
         environment["SSH_AUTH_SOCK"] = repo.directory.appendingPathComponent("no-such-agent.sock").path
 
-        let exit = run(request, arguments: arguments, environment: environment, decision: .approval)
+        let exit = run(request, arguments: arguments, environment: environment, decision: .approval())
 
         XCTAssertEqual(exit.status, 2)
         let message = try XCTUnwrap(exit.message)
@@ -43,7 +43,7 @@ final class FailureSemanticsTests: XCTestCase {
         try Data("stale".utf8).write(to: request.signatureFile)
         let arguments = request.arguments.map { $0 == repo.privateKey.path ? "/nonexistent/key" : $0 }
 
-        let exit = run(request, arguments: arguments, decision: .approval)
+        let exit = run(request, arguments: arguments, decision: .approval())
 
         XCTAssertEqual(exit.status, 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
@@ -51,10 +51,10 @@ final class FailureSemanticsTests: XCTestCase {
 
     func testTheThreeFailureStatusesAndMessagesAreDistinct() throws {
         let denied = run(try repo.signingRequest(forCommitWithMessage: "denied"), decision: .denial)
-        let malformed = run(try repo.signingRequest(body: "garbage"), decision: .approval)
+        let malformed = run(try repo.signingRequest(body: "garbage"), decision: .approval())
         let unreachable = try repo.signingRequest(forCommitWithMessage: "unreachable")
         let failed = run(unreachable, arguments: unreachable.arguments.map { $0 == repo.privateKey.path ? "/nonexistent/key" : $0 },
-                         decision: .approval)
+                         decision: .approval())
 
         XCTAssertEqual(denied, Exit(status: 1, message: "seal: signing denied"))
         XCTAssertEqual(malformed.status, 3)
@@ -79,7 +79,7 @@ final class FailureSemanticsTests: XCTestCase {
             let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in
                 bothOpen.leave()
                 XCTAssertEqual(bothOpen.wait(timeout: .now() + 10), .success, "the other Review never opened")
-                return i == 0 ? .approval : .denial
+                return i == 0 ? .approval() : .denial
             }
             lock.lock(); exits[i == 0 ? "approved" : "denied"] = exit; lock.unlock()
         }

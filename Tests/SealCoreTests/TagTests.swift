@@ -112,7 +112,7 @@ final class TagTests: XCTestCase {
         try repo.commit(message: "root")
         let request = try repo.signingRequest(forTag: "v1", message: "v1")
 
-        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval() }
 
         XCTAssertEqual(exit, Exit(status: 0))
         XCTAssertNoThrow(try repo.verify(request))

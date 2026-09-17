@@ -35,7 +35,7 @@ final class SigningRequestTests: XCTestCase {
     func testApprovalWritesSignatureNextToBufferFileThatVerifies() throws {
         let request = try repo.signingRequest(forCommitWithMessage: "approved")
 
-        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval() }
 
         XCTAssertEqual(exit, Exit(status: 0))
         XCTAssertTrue(FileManager.default.fileExists(atPath: request.signatureFile.path))
@@ -55,7 +55,7 @@ final class SigningRequestTests: XCTestCase {
         let request = try repo.signingRequest(body: "not a commit body at all")
         var reviewOpened = false
 
-        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in reviewOpened = true; return .approval }
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in reviewOpened = true; return .approval() }
 
         XCTAssertEqual(exit.status, 3)
         XCTAssertTrue(try XCTUnwrap(exit.message).hasPrefix("seal: malformed request"), "\(exit)")
@@ -67,7 +67,7 @@ final class SigningRequestTests: XCTestCase {
         let body = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n\nno author or committer\n"
         let request = try repo.signingRequest(body: body)
 
-        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval() }
 
         XCTAssertEqual(exit.status, 3)
     }
@@ -84,7 +84,7 @@ final class SigningRequestTests: XCTestCase {
 
     func testMissingBufferFileArgumentExitsThree() throws {
         let exit = Seal.run(arguments: ["-Y", "sign", "-n", "git", "-f", repo.privateKey.path],
-                            environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
+                            environment: repo.environment, workingDirectory: repo.directory) { _ in .approval() }
 
         XCTAssertEqual(exit.status, 3)
     }
@@ -93,7 +93,7 @@ final class SigningRequestTests: XCTestCase {
         let request = try repo.signingRequest(forCommitWithMessage: "no key")
         let arguments = request.arguments.map { $0 == repo.privateKey.path ? "/nonexistent/key" : $0 }
 
-        let exit = Seal.run(arguments: arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
+        let exit = Seal.run(arguments: arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval() }
 
         XCTAssertEqual(exit.status, 2)
         let message = try XCTUnwrap(exit.message)
@@ -105,7 +105,7 @@ final class SigningRequestTests: XCTestCase {
         let body = "object 4b825dc642cb6eb9a060e54bf8d69288fbee4904\ntype commit\ntag v1\n\nno tagger\n"
         let request = try repo.signingRequest(body: body)
 
-        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval }
+        let exit = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in .approval() }
 
         XCTAssertEqual(exit.status, 3)
         XCTAssertTrue(try XCTUnwrap(exit.message).contains("tagger"), "\(exit)")

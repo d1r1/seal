@@ -141,3 +141,22 @@ extension ScratchRepository {
         return try signingRequest(body: try git("cat-file", "tag", name))
     }
 }
+
+extension ScratchRepository {
+    /// Switches the repository to the group key the way the user does by hand: `user.signingkey` becomes the
+    /// literal `key::` form and the group key joins `allowed_signers` under the same principal.
+    func useGroupKey(_ line: String) throws {
+        try git("config", "user.signingkey", "key::\(line)")
+        try "test@seal namespaces=\"git\" \(line)\n".write(to: allowedSigners, atomically: true, encoding: .utf8)
+    }
+
+    /// What git passes for a literal `user.signingkey`: the key written to a temporary file, `-f` naming it, and `-U`.
+    func groupSigningRequest(body: String, groupKeyLine line: String) throws -> CapturedSigningRequest {
+        let keyFile = directory.appendingPathComponent(".git_signing_key_tmp\(UUID().uuidString)")
+        try (line + "\n").write(to: keyFile, atomically: true, encoding: .utf8)
+        let bufferFile = directory.appendingPathComponent(".git_signing_buffer_\(UUID().uuidString)")
+        try Data(body.utf8).write(to: bufferFile)
+        return CapturedSigningRequest(arguments: ["-Y", "sign", "-n", "git", "-f", keyFile.path, "-U", bufferFile.path],
+                                      bufferFile: bufferFile)
+    }
+}
