@@ -1,6 +1,6 @@
 # 0001: Seal is a gate in front of the 1Password key, not a key holder
 
-Status: accepted
+Status: accepted; superseded for the group key by [0002](0002-seal-holds-a-frost-share.md), still in force for the personal key
 Date: 2026-09-04
 
 ## Context

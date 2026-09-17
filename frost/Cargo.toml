@@ -1,0 +1,23 @@
+[package]
+name = "seal-frost"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Seal's FROST helper: dealer key generation and 2-of-3 Ed25519 group signatures in the SSHSIG envelope"
+publish = false
+
+[[bin]]
+name = "seal-frost"
+path = "src/main.rs"
+
+[dependencies]
+# FROST(Ed25519, SHA-512), RFC 9591 ciphersuite; the "serde" feature gives JSON for shares.
+frost-ed25519 = { version = "3.0.0", features = ["serde"] }
+# SSHSIG envelope and OpenSSH public-key encoding.
+ssh-key = "0.6.7"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Installs Seal for the current user:
-#   1. builds the release binary and copies it to ~/.local/bin/seal
+#   1. builds the release binaries and copies them to ~/.local/bin/seal and ~/.local/bin/seal-frost
+#      (the FROST helper Seal runs for the group key; ADR 0002)
 #   2. points git's global gpg.ssh.program at it (nothing else in the git config changes)
 #   3. installs the Claude Code guard hook (scripts/seal-guard.sh) that refuses git commands
 #      which would sign around Seal, and registers it in ~/.claude/settings.json
-# Idempotent: run again after pulling to update. Requires: swift, git, jq.
+# Idempotent: run again after pulling to update. Requires: swift, cargo, git, jq.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -13,9 +14,11 @@ settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 
 mkdir -p "$bin"
 swift build -c release >/dev/null
+(cd frost && cargo build --release --quiet)
 install -m 755 .build/release/seal "$bin/seal"
+install -m 755 frost/target/release/seal-frost "$bin/seal-frost"
 install -m 755 scripts/seal-guard.sh "$bin/seal-guard"
-echo "installed $bin/seal and $bin/seal-guard"
+echo "installed $bin/seal, $bin/seal-frost and $bin/seal-guard"
 
 git config --global gpg.ssh.program "$bin/seal"
 echo "git config --global gpg.ssh.program $bin/seal"
