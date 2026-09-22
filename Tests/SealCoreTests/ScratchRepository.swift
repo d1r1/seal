@@ -45,6 +45,8 @@ struct ScratchRepository {
         process.currentDirectoryURL = directory
         var environment = ProcessInfo.processInfo.environment
         environment["SSH_AUTH_SOCK"] = nil
+        // git hands its environment to the `seal` binary it runs; keep that binary on the card path.
+        environment["PASEO_AGENT_ID"] = nil
         environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
         environment["GIT_CONFIG_NOSYSTEM"] = "1"
         process.environment = environment
@@ -91,10 +93,12 @@ extension ScratchRepository {
         return CapturedSigningRequest(arguments: arguments, bufferFile: bufferFile)
     }
 
-    /// The environment git would give the signing program in this repository: no agent socket.
+    /// The environment git would give the signing program in this repository: no agent socket, and no Paseo
+    /// agent id even when the tests themselves run inside a Paseo agent, so the card path is the default.
     var environment: [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["SSH_AUTH_SOCK"] = nil
+        environment["PASEO_AGENT_ID"] = nil
         return environment
     }
 

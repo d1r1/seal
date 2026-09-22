@@ -105,6 +105,16 @@ final class OriginTests: XCTestCase {
         XCTAssertEqual(try origin(processTable: table).session, "unknown")
     }
 
+    func testPaseoAgentIdIsReadFromTheEnvironment() throws {
+        let id = "7f3684f0-a86f-4b96-b44b-7e44d5e8e72c"
+        XCTAssertEqual(try origin(environment: ["PASEO_AGENT_ID": id]).paseoAgentId, id)
+    }
+
+    func testPaseoAgentIdIsNilWhenTheVariableIsAbsentOrEmpty() throws {
+        XCTAssertNil(try origin().paseoAgentId)
+        XCTAssertNil(try origin(environment: ["PASEO_AGENT_ID": ""]).paseoAgentId)
+    }
+
     func testLiveProcessTableReadsThisProcessesOwnParentAndArguments() throws {
         let table = ProcessTable.live
         let parent = try XCTUnwrap(table.parent(me))

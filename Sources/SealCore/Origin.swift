@@ -13,12 +13,17 @@ public struct Origin: Equatable {
     /// The pid of the nearest application ancestor (the terminal or editor the request came from), when there
     /// is one, so the Review can bring it forward.
     public let applicationPid: pid_t?
+    /// `PASEO_AGENT_ID` when the request came from a Paseo agent; an empty value reads as absent. It selects the
+    /// agent path, which forwards the request to the notary, and authenticates nothing (seal-frost ADR 0003).
+    public let paseoAgentId: String?
 
-    public init(session: String, directory: String, command: String, applicationPid: pid_t? = nil) {
+    public init(session: String, directory: String, command: String, applicationPid: pid_t? = nil,
+                paseoAgentId: String? = nil) {
         self.session = session
         self.directory = directory
         self.command = command
         self.applicationPid = applicationPid
+        self.paseoAgentId = paseoAgentId
     }
 
     static func resolve(environment: [String: String], workingDirectory: URL, processTable: ProcessTable,
@@ -29,7 +34,8 @@ public struct Origin: Equatable {
         return Origin(session: session(environment: environment, application: application, sessionRecords: sessionRecords),
                       directory: workingDirectory.path,
                       command: command.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown",
-                      applicationPid: application?.pid)
+                      applicationPid: application?.pid,
+                      paseoAgentId: environment["PASEO_AGENT_ID"].flatMap { $0.isEmpty ? nil : $0 })
     }
 
     private static func session(environment: [String: String], application: ProcessTable.Application?,
