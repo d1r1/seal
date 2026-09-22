@@ -117,9 +117,10 @@ Install Seal (https://github.com/d1r1/seal), a macOS git signing gate, on this m
 ```
 
 Two things the agent should know before it starts. The install changes your **global** git config, so it
-affects every repository on the machine. And from the moment it succeeds, every commit the agent makes,
-including the ones it makes for itself, needs your finger on the sensor: the agent cannot verify its own
-install unattended. That is the point of the tool, not a limitation of it.
+affects every repository on the machine. And from the moment it succeeds, every commit that takes the card
+path, including the ones the agent makes for itself, needs your finger on the sensor: the agent cannot
+verify its own install unattended. That is the point of the tool, not a limitation of it. A commit from a
+Paseo agent goes to the notary instead and needs no touch; see [The agent path](#the-agent-path).
 
 ## Uninstall
 
