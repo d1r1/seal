@@ -61,13 +61,17 @@ public enum Seal {
         switch Mode.of(arguments) {
         case .signingRequest:
             let request: SigningRequest
+            let origin = Origin.resolve(environment: environment, workingDirectory: workingDirectory,
+                                        processTable: processTable, sessionRecords: sessionRecords)
             do {
-                let origin = Origin.resolve(environment: environment, workingDirectory: workingDirectory,
-                                            processTable: processTable, sessionRecords: sessionRecords)
                 request = try SigningRequest.parse(arguments: arguments, origin: origin,
                                                    in: Repository(workingDirectory: workingDirectory, environment: environment),
                                                    group: group)
             } catch let malformed as SigningRequest.Malformed {
+                if origin.paseoAgentId != nil, let buffer = malformed.bufferFile {
+                    // The agent path leaves no `.sig` behind on any non-zero exit, a stale one included.
+                    try? FileManager.default.removeItem(at: buffer.appendingPathExtension("sig"))
+                }
                 return .malformedRequest(malformed.reason)
             } catch {
                 return .malformedRequest(error.localizedDescription)

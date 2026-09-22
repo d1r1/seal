@@ -21,8 +21,9 @@ public struct SigningRequest: Equatable {
     let body: String
     /// The `-n` value git gave, `git` for commits and tags; the notary signs with it.
     let namespace: String
-    /// The contents of the `-f` public key file, one line, trailing newline stripped; nil when the file cannot be
-    /// read as text (for the personal key `-f` may name a private key file, which only `ssh-keygen` reads).
+    /// The contents of the `-f` public key file, one line, trailing newline stripped; nil unless the file holds a
+    /// single OpenSSH public key line. For the personal key `-f` may name a private key file, which only
+    /// `ssh-keygen` reads; it must never reach the notary.
     let keyLine: String?
 
     /// The arguments git gave for `-Y sign`, handed to the Key holder unchanged (`-U` selects the agent).
@@ -31,6 +32,8 @@ public struct SigningRequest: Equatable {
 
     struct Malformed: Error {
         let reason: String
+        /// The buffer file git named, when the arguments name exactly one, so a stale signature can be removed.
+        var bufferFile: URL?
     }
 
     /// Reads the arguments git passes for `-Y sign` and parses the object body in the buffer file.
@@ -54,6 +57,18 @@ public struct SigningRequest: Equatable {
             }
             index += 1
         }
+        let named = positional.count == 1 ? URL(fileURLWithPath: positional[0]) : nil
+        do {
+            return try parse(arguments: arguments, publicKeyFile: publicKeyFile, namespace: namespace,
+                             positional: positional, origin: origin, in: repository, group: group)
+        } catch var malformed as Malformed {
+            malformed.bufferFile = named
+            throw malformed
+        }
+    }
+
+    private static func parse(arguments: [String], publicKeyFile: String?, namespace: String?, positional: [String],
+                              origin: Origin, in repository: Repository, group: GroupKey) throws -> SigningRequest {
         guard let publicKeyFile else { throw Malformed(reason: "no -f key file given") }
         guard let namespace else { throw Malformed(reason: "no -n namespace given") }
         guard positional.count == 1, let bufferPath = positional.first else {
@@ -80,11 +95,23 @@ public struct SigningRequest: Equatable {
                               arguments: arguments, bufferFile: bufferFile)
     }
 
+    /// One OpenSSH public key line: a key type, the base64 key, an optional comment; only whitespace may follow
+    /// on later lines. Anything else, a private key file included, reads as nil.
     private static func keyLine(fileAt path: String) -> String? {
         guard let data = FileManager.default.contents(atPath: path), let text = String(data: data, encoding: .utf8) else {
             return nil
         }
-        return text.hasSuffix("\n") ? String(text.dropLast()) : text
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let first = lines.first, lines.dropFirst().allSatisfy({ $0.allSatisfy(\.isWhitespace) }) else { return nil }
+        let line = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens = line.split(separator: " ", omittingEmptySubsequences: true)
+        guard tokens.count >= 2, isPublicKeyType(tokens[0]), let blob = Data(base64Encoded: String(tokens[1])),
+              !blob.isEmpty else { return nil }
+        return line
+    }
+
+    private static func isPublicKeyType(_ token: Substring) -> Bool {
+        ["ssh-ed25519", "ssh-rsa"].contains(token) || token.hasPrefix("ecdsa-sha2-") || token.hasPrefix("sk-")
     }
 }
 

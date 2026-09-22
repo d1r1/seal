@@ -165,6 +165,83 @@ final class NotaryPathTests: XCTestCase {
                                   exit: Exit(status: 2, message: "seal: notary: malformed response: unknown version 2"))
     }
 
+    func testABooleanVersionExitsTwoAsMalformed() throws {
+        try assertRefusedOrFailed(answer: #"{"v":true,"ok":true,"signature":"-----BEGIN SSH SIGNATURE-----\n"}"#,
+                                  exit: Exit(status: 2, message: "seal: notary: malformed response: no version"))
+    }
+
+    func testANumericOkExitsTwoAsMalformed() throws {
+        try assertRefusedOrFailed(answer: #"{"v":1,"ok":1,"signature":"-----BEGIN SSH SIGNATURE-----\n"}"#,
+                                  exit: Exit(status: 2, message: "seal: notary: malformed response: no ok"))
+    }
+
+    func testAPrivateKeyFileIsNeverSentToTheNotary() throws {
+        try repo.commit(message: "private key path")
+        // The scratch repository's `-f` names the private key file, as a path in `user.signingkey` may.
+        let request = try repo.signingRequestForHead()
+        notary.serve(answer: signedAnswer)
+
+        let outcome = run(request)
+        notary.stop()
+
+        XCTAssertEqual(outcome.exit, Exit(status: 3, message: "seal: malformed request: -f does not name a public key"))
+        XCTAssertFalse(outcome.reviewed)
+        XCTAssertFalse(notary.accepted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
+    }
+
+    func testAZeroOkExitsTwoAsMalformed() throws {
+        try assertRefusedOrFailed(answer: #"{"v":1,"ok":0,"status":"refused","reason":"numeric ok"}"#,
+                                  exit: Exit(status: 2, message: "seal: notary: malformed response: no ok"))
+    }
+
+    func testAPrivateKeyFileTakesTheCardPathUnchangedWithoutAnAgentId() throws {
+        try repo.commit(message: "private key from the terminal")
+        let request = try repo.signingRequestForHead()
+
+        let outcome = Seal.run(arguments: request.arguments, environment: repo.environment, workingDirectory: repo.directory,
+                               notary: NotarySocket(path: notary.path)) { _ in .approval() }
+
+        XCTAssertEqual(outcome, Exit(status: 0))
+        XCTAssertNoThrow(try repo.verify(request))
+    }
+
+    func testAKeyFileWhoseKeyIsNotBase64IsNeverSentToTheNotary() throws {
+        try repo.commit(message: "bad key")
+        let request = try repo.groupSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"),
+                                                   groupKeyLine: "ssh-ed25519 not*base64 test@seal")
+        notary.serve(answer: signedAnswer)
+
+        let outcome = run(request)
+        notary.stop()
+
+        XCTAssertEqual(outcome.exit, Exit(status: 3, message: "seal: malformed request: -f does not name a public key"))
+        XCTAssertFalse(notary.accepted)
+    }
+
+    func testAPublicKeyFileWithTrailingBlankLinesSendsOnlyTheKeyLine() throws {
+        try repo.commit(message: "trailing blank line")
+        let request = try repo.groupSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"),
+                                                   groupKeyLine: try publicKeyLine() + "\n  ")
+        notary.serve(answer: signedAnswer)
+
+        XCTAssertEqual(run(request).exit, Exit(status: 0))
+        XCTAssertEqual(try XCTUnwrap(notary.received())["key"] as? String, try publicKeyLine())
+    }
+
+    func testAMalformedRequestFromAnAgentLeavesNoStaleSignature() throws {
+        try repo.commit(message: "no namespace")
+        let captured = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
+        try Data("stale".utf8).write(to: captured.signatureFile)
+        let arguments = captured.arguments.filter { $0 != "-n" && $0 != "git" }
+
+        let outcome = Seal.run(arguments: arguments, environment: agentEnvironment, workingDirectory: repo.directory,
+                               notary: NotarySocket(path: notary.path)) { _ in .denial }
+
+        XCTAssertEqual(outcome, Exit(status: 3, message: "seal: malformed request: no -n namespace given"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: captured.signatureFile.path))
+    }
+
     func testAnAbsentSocketExitsTwoNamingThePathAndLeavesNoSignature() throws {
         try repo.commit(message: "nobody listens")
         let request = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
@@ -204,12 +281,13 @@ final class NotaryPathTests: XCTestCase {
 /// answers with the line the test scripts. It also records whether the client half-closed before the answer.
 final class FakeNotary {
     let path: URL
-    private let listener: Int32
+    private var listener: Int32
     private let finished = DispatchSemaphore(value: 0)
     private var serving = false
     private var request: [String: Any]?
     private(set) var answered: String?
     private(set) var clientHalfClosed: Bool?
+    private(set) var accepted = false
 
     init() throws {
         // sun_path holds 104 bytes; the per-user temporary directory is too deep for a socket name.
@@ -235,10 +313,12 @@ final class FakeNotary {
     /// when the script already ends with one.
     func serve(answer: @escaping ([String: Any]?) -> String) {
         serving = true
+        let listener = listener
         DispatchQueue.global().async { [self] in
             defer { finished.signal() }
             let connection = accept(listener, nil, nil)
             guard connection >= 0 else { return }
+            accepted = true
             defer { close(connection) }
             var line = Data()
             var byte: UInt8 = 0
@@ -271,9 +351,12 @@ final class FakeNotary {
     }
 
     func stop() {
+        // Idempotent: the descriptor number may belong to someone else once it is closed.
+        guard listener >= 0 else { return }
         // Wakes a pending accept when the client never connected.
         shutdown(listener, SHUT_RDWR)
         close(listener)
+        listener = -1
         finish()
         unlink(path.path)
     }

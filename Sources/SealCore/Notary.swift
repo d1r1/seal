@@ -98,7 +98,7 @@ enum Notary {
 
     private static func outcome(_ request: SigningRequest, socket: NotarySocket, signatureFile: URL) -> Exit {
         guard let keyLine = request.keyLine else {
-            return .malformedRequest("the -f key file does not hold a public key line")
+            return .malformedRequest("-f does not name a public key")
         }
         let response: Data
         do {
@@ -138,10 +138,11 @@ enum Notary {
             guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else {
                 return .malformed("not a JSON object")
             }
-            guard let version = object["v"] as? Int else { return .malformed("no version") }
+            // JSONSerialization reads `true` as 1 and 1 as true; the contract's types are checked exactly.
+            guard let version = object["v"] as? NSNumber, !version.isBoolean else { return .malformed("no version") }
             guard version == 1 else { return .malformed("unknown version \(version)") }
-            guard let ok = object["ok"] as? Bool else { return .malformed("no ok") }
-            if ok {
+            guard let ok = object["ok"] as? NSNumber, ok.isBoolean else { return .malformed("no ok") }
+            if ok.boolValue {
                 guard let signature = object["signature"] as? String, !signature.isEmpty else {
                     return .malformed("no signature")
                 }
@@ -156,4 +157,8 @@ enum Notary {
             }
         }
     }
+}
+
+private extension NSNumber {
+    var isBoolean: Bool { CFGetTypeID(self) == CFBooleanGetTypeID() }
 }
