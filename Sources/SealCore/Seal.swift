@@ -67,14 +67,15 @@ public enum Seal {
                 request = try SigningRequest.parse(arguments: arguments, origin: origin,
                                                    in: Repository(workingDirectory: workingDirectory, environment: environment),
                                                    group: group)
-            } catch let malformed as SigningRequest.Malformed {
-                if origin.paseoAgentId != nil, let buffer = malformed.bufferFile {
-                    // The agent path leaves no `.sig` behind on any non-zero exit, a stale one included.
-                    try? FileManager.default.removeItem(at: buffer.appendingPathExtension("sig"))
-                }
-                return .malformedRequest(malformed.reason)
             } catch {
-                return .malformedRequest(error.localizedDescription)
+                if origin.paseoAgentId != nil {
+                    // The agent path leaves no `.sig` behind on any non-zero exit, a stale one included; every
+                    // argument that could be the buffer file counts.
+                    for candidate in SignArguments(arguments).positional {
+                        try? FileManager.default.removeItem(at: URL(fileURLWithPath: candidate).appendingPathExtension("sig"))
+                    }
+                }
+                return .malformedRequest((error as? SigningRequest.Malformed)?.reason ?? error.localizedDescription)
             }
             if request.origin.paseoAgentId != nil {
                 return Notary.sign(request, socket: notary)

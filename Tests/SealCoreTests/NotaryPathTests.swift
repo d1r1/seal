@@ -31,6 +31,39 @@ final class NotaryPathTests: XCTestCase {
         try repo.groupSigningRequest(body: body, groupKeyLine: try publicKeyLine())
     }
 
+    /// A request for HEAD whose `-f` file holds exactly `contents`, byte for byte.
+    private func agentSigningRequest(keyFileContents contents: String) throws -> ScratchRepository.CapturedSigningRequest {
+        let captured = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
+        let keyFile = try XCTUnwrap(captured.arguments.firstIndex(of: "-f").map { captured.arguments[$0 + 1] })
+        try Data(contents.utf8).write(to: URL(fileURLWithPath: keyFile))
+        return captured
+    }
+
+    /// The key field the notary received for a `-f` file holding `contents`, or nil when Seal sent nothing.
+    private func keySent(forKeyFile contents: String, file: StaticString = #filePath, line: UInt = #line) throws -> String? {
+        try repo.commit(message: "key file")
+        let request = try agentSigningRequest(keyFileContents: contents)
+        notary.serve(answer: signedAnswer)
+        let exit = run(request).exit
+        guard exit.status == 0 else {
+            notary.stop()
+            XCTAssertEqual(exit, Exit(status: 3, message: "seal: malformed request: -f does not name a public key"),
+                           file: file, line: line)
+            XCTAssertFalse(notary.accepted, file: file, line: line)
+            return nil
+        }
+        return try XCTUnwrap(notary.received())["key"] as? String
+    }
+
+    /// An OpenSSH key blob: the length-prefixed type string followed by arbitrary key bytes.
+    private func blob(type: String) -> String {
+        var data = Data()
+        withUnsafeBytes(of: UInt32(type.utf8.count).bigEndian) { data.append(contentsOf: $0) }
+        data.append(contentsOf: Array(type.utf8))
+        data.append(contentsOf: [0, 0, 0, 32] + Array(repeating: 7, count: 32))
+        return data.base64EncodedString()
+    }
+
     private func publicKeyLine() throws -> String {
         try String(contentsOf: repo.privateKey.appendingPathExtension("pub"), encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -240,6 +273,54 @@ final class NotaryPathTests: XCTestCase {
 
         XCTAssertEqual(outcome, Exit(status: 3, message: "seal: malformed request: no -n namespace given"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: captured.signatureFile.path))
+    }
+
+    func testADanglingOptionAfterTheBufferLeavesNoStaleSignature() throws {
+        try repo.commit(message: "dangling option")
+        let captured = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
+        try Data("stale".utf8).write(to: captured.signatureFile)
+
+        let outcome = Seal.run(arguments: captured.arguments + ["-n"], environment: agentEnvironment,
+                               workingDirectory: repo.directory, notary: NotarySocket(path: notary.path)) { _ in .denial }
+
+        XCTAssertEqual(outcome, Exit(status: 3, message: "seal: malformed request: option -n has no value"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: captured.signatureFile.path))
+    }
+
+    func testATabSeparatedPublicKeyLineIsSent() throws {
+        let tabbed = try publicKeyLine().replacingOccurrences(of: " ", with: "\t")
+        XCTAssertEqual(try keySent(forKeyFile: tabbed + "\n"), tabbed)
+    }
+
+    func testACRLFEndedPublicKeyLineIsSentWithoutTheLineEnd() throws {
+        XCTAssertEqual(try keySent(forKeyFile: try publicKeyLine() + "\r\n"), try publicKeyLine())
+    }
+
+    func testTwoCRLFSeparatedKeyLinesAreNeverSent() throws {
+        let key = try publicKeyLine()
+        XCTAssertNil(try keySent(forKeyFile: key + "\r\n" + key + "\r\n"))
+    }
+
+    func testTrailingSpacesInTheCommentAreKept() throws {
+        let key = try publicKeyLine() + " a comment  "
+        XCTAssertEqual(try keySent(forKeyFile: key + "\n"), key)
+    }
+
+    func testABlobThatIsNotAKeyOfItsTypeIsNeverSent() throws {
+        XCTAssertNil(try keySent(forKeyFile: "ssh-ed25519 YQ== fake\n"))
+    }
+
+    func testAnUnknownTypeWithoutAMatchingBlobIsNeverSent() throws {
+        XCTAssertNil(try keySent(forKeyFile: "sk-nonexistent YQ== fake\n"))
+    }
+
+    func testABlobOfAnotherTypeIsNeverSent() throws {
+        XCTAssertNil(try keySent(forKeyFile: "ssh-rsa \(blob(type: "ssh-ed25519")) mismatched\n"))
+    }
+
+    func testASecurityKeyLineWithAMatchingBlobIsSent() throws {
+        let key = "sk-ssh-ed25519@openssh.com \(blob(type: "sk-ssh-ed25519@openssh.com")) yubikey"
+        XCTAssertEqual(try keySent(forKeyFile: key + "\n"), key)
     }
 
     func testAnAbsentSocketExitsTwoNamingThePathAndLeavesNoSignature() throws {

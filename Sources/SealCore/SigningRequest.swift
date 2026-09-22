@@ -32,47 +32,16 @@ public struct SigningRequest: Equatable {
 
     struct Malformed: Error {
         let reason: String
-        /// The buffer file git named, when the arguments name exactly one, so a stale signature can be removed.
-        var bufferFile: URL?
     }
 
     /// Reads the arguments git passes for `-Y sign` and parses the object body in the buffer file.
     static func parse(arguments: [String], origin: Origin, in repository: Repository, group: GroupKey) throws -> SigningRequest {
-        var publicKeyFile: String?
-        var namespace: String?
-        var positional: [String] = []
-        var index = arguments.startIndex
-        while index < arguments.endIndex {
-            let argument = arguments[index]
-            if argument == "-U" {
-                // Bare flag: sign with the agent that holds the key named by `-f`.
-            } else if argument.hasPrefix("-") {
-                // Every other `ssh-keygen -Y sign` option takes a value.
-                index += 1
-                guard index < arguments.endIndex else { throw Malformed(reason: "option \(argument) has no value") }
-                if argument == "-f" { publicKeyFile = arguments[index] }
-                if argument == "-n" { namespace = arguments[index] }
-            } else {
-                positional.append(argument)
-            }
-            index += 1
-        }
-        let named = positional.count == 1 ? URL(fileURLWithPath: positional[0]) : nil
-        do {
-            return try parse(arguments: arguments, publicKeyFile: publicKeyFile, namespace: namespace,
-                             positional: positional, origin: origin, in: repository, group: group)
-        } catch var malformed as Malformed {
-            malformed.bufferFile = named
-            throw malformed
-        }
-    }
-
-    private static func parse(arguments: [String], publicKeyFile: String?, namespace: String?, positional: [String],
-                              origin: Origin, in repository: Repository, group: GroupKey) throws -> SigningRequest {
-        guard let publicKeyFile else { throw Malformed(reason: "no -f key file given") }
-        guard let namespace else { throw Malformed(reason: "no -n namespace given") }
-        guard positional.count == 1, let bufferPath = positional.first else {
-            throw Malformed(reason: "expected exactly one buffer file, got \(positional.count)")
+        let scanned = SignArguments(arguments)
+        if let option = scanned.danglingOption { throw Malformed(reason: "option \(option) has no value") }
+        guard let publicKeyFile = scanned.options["-f"] else { throw Malformed(reason: "no -f key file given") }
+        guard let namespace = scanned.options["-n"] else { throw Malformed(reason: "no -n namespace given") }
+        guard scanned.positional.count == 1, let bufferPath = scanned.positional.first else {
+            throw Malformed(reason: "expected exactly one buffer file, got \(scanned.positional.count)")
         }
         let bufferFile = URL(fileURLWithPath: bufferPath)
         guard let data = FileManager.default.contents(atPath: bufferPath) else {
@@ -95,23 +64,61 @@ public struct SigningRequest: Equatable {
                               arguments: arguments, bufferFile: bufferFile)
     }
 
-    /// One OpenSSH public key line: a key type, the base64 key, an optional comment; only whitespace may follow
-    /// on later lines. Anything else, a private key file included, reads as nil.
+    /// One OpenSSH public key line, as `ssh-keygen` reads it: a key type, the base64 blob, an optional comment,
+    /// separated by spaces or tabs, where the blob starts with its own length-prefixed type. Only whitespace may
+    /// follow on later lines. The line comes back with just its line end (`\n` or `\r\n`) removed. Anything
+    /// else, a private key file included, reads as nil.
     private static func keyLine(fileAt path: String) -> String? {
         guard let data = FileManager.default.contents(atPath: path), let text = String(data: data, encoding: .utf8) else {
             return nil
         }
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let first = lines.first, lines.dropFirst().allSatisfy({ $0.allSatisfy(\.isWhitespace) }) else { return nil }
-        let line = first.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tokens = line.split(separator: " ", omittingEmptySubsequences: true)
-        guard tokens.count >= 2, isPublicKeyType(tokens[0]), let blob = Data(base64Encoded: String(tokens[1])),
-              !blob.isEmpty else { return nil }
+        // Scalars, not Characters: `\r\n` is a single Character and would hide a line break.
+        let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let scalars = line.last == "\r" ? line.dropLast() : line
+            return String(String.UnicodeScalarView(scalars))
+        }
+        guard let line = lines.first,
+              lines.dropFirst().allSatisfy({ $0.unicodeScalars.allSatisfy(CharacterSet.whitespaces.contains) })
+        else { return nil }
+        let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard tokens.count >= 2, let blob = Data(base64Encoded: String(tokens[1])),
+              blobHeader(blob) == Array(tokens[0].utf8) else { return nil }
         return line
     }
 
-    private static func isPublicKeyType(_ token: Substring) -> Bool {
-        ["ssh-ed25519", "ssh-rsa"].contains(token) || token.hasPrefix("ecdsa-sha2-") || token.hasPrefix("sk-")
+    /// The type string at the start of a key blob: a big-endian uint32 length, then that many bytes.
+    private static func blobHeader(_ blob: Data) -> [UInt8]? {
+        let bytes = Array(blob)
+        guard bytes.count >= 4 else { return nil }
+        let length = bytes[0..<4].reduce(0) { $0 << 8 | Int($1) }
+        guard length > 0, bytes.count >= 4 + length else { return nil }
+        return Array(bytes[4..<(4 + length)])
+    }
+}
+
+/// The options and positional arguments of `-Y sign`, read without failing: every option but `-U` takes the
+/// next argument as its value, and an option left without one is reported rather than thrown, so the buffer
+/// file is known even when the request is malformed.
+struct SignArguments {
+    private(set) var options: [String: String] = [:]
+    private(set) var positional: [String] = []
+    private(set) var danglingOption: String?
+
+    init(_ arguments: [String]) {
+        var index = arguments.startIndex
+        while index < arguments.endIndex {
+            let argument = arguments[index]
+            if argument == "-U" {
+                // Bare flag: sign with the agent that holds the key named by `-f`.
+            } else if argument.hasPrefix("-") {
+                index += 1
+                guard index < arguments.endIndex else { danglingOption = argument; return }
+                options[argument] = arguments[index]
+            } else {
+                positional.append(argument)
+            }
+            index += 1
+        }
     }
 }
 
