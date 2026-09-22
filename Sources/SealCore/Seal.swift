@@ -24,6 +24,19 @@ public struct Exit: Equatable {
     static func malformedRequest(_ reason: String) -> Exit {
         Exit(status: 3, message: "seal: malformed request: \(reason)")
     }
+
+    /// The notary's answer on the agent path; the statuses are the same as for the card.
+    static func notaryRefusal(_ reason: String) -> Exit {
+        Exit(status: 1, message: "seal: signing denied: \(reason)")
+    }
+
+    static func notaryFailure(_ reason: String) -> Exit {
+        Exit(status: 2, message: "seal: notary: \(reason)")
+    }
+
+    static func notaryNotFound(at path: URL) -> Exit {
+        Exit(status: 2, message: "seal: notary socket not found at \(path.path)")
+    }
 }
 
 public enum Seal {
@@ -37,9 +50,13 @@ public enum Seal {
     /// (Claude Code's transcripts, `~/.claude/projects` by default) feed the Origin; tests supply synthetic ones.
     /// `group` is where the group key and Seal's share live and `helper` is the `seal-frost` executable; tests
     /// supply a temporary directory and the crate's build. No environment variable selects either.
+    /// A request from a Paseo agent (`PASEO_AGENT_ID` set) takes the agent path whatever key it names: it is
+    /// forwarded to the notary on `notary` and `review` is not called (seal-frost ADR 0003, decision 1). Tests
+    /// supply a temporary socket; the path never comes from the environment.
     public static func run(arguments: [String], environment: [String: String], workingDirectory: URL,
                            processTable: ProcessTable = .live, sessionRecords: URL = defaultSessionRecords,
                            group: GroupKey = GroupKey(), helper: FrostHelper = .nextTo(Bundle.main.executableURL ?? URL(fileURLWithPath: "/")),
+                           notary: NotarySocket = NotarySocket(),
                            review: (SigningRequest) -> Decision) -> Exit {
         switch Mode.of(arguments) {
         case .signingRequest:
@@ -54,6 +71,9 @@ public enum Seal {
                 return .malformedRequest(malformed.reason)
             } catch {
                 return .malformedRequest(error.localizedDescription)
+            }
+            if request.origin.paseoAgentId != nil {
+                return Notary.sign(request, socket: notary)
             }
             switch (review(request), request.keyHolder) {
             case (.approval(nil), .personal):

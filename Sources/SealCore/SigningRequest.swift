@@ -17,6 +17,8 @@ public struct SigningRequest: Equatable {
     public let changes: [ChangeSummary]
     /// The Key holder this request goes to: the group when `-f` names the group key, the personal key otherwise.
     public let keyHolder: KeyHolderKind
+    /// The object body exactly as git wrote it to the buffer file; the notary receives it verbatim.
+    let body: String
     /// The `-n` value git gave, `git` for commits and tags; the notary signs with it.
     let namespace: String
     /// The contents of the `-f` public key file, one line, trailing newline stripped; nil when the file cannot be
@@ -74,7 +76,7 @@ public struct SigningRequest: Equatable {
         }
         return SigningRequest(origin: origin, object: parsed.object, message: parsed.message, branch: repository.branch(),
                               changes: changes, keyHolder: group.isGroupKey(fileAt: publicKeyFile) ? .group : .personal,
-                              namespace: namespace, keyLine: keyLine(fileAt: publicKeyFile),
+                              body: body, namespace: namespace, keyLine: keyLine(fileAt: publicKeyFile),
                               arguments: arguments, bufferFile: bufferFile)
     }
 

@@ -105,11 +105,7 @@ final class OriginTests: XCTestCase {
         XCTAssertEqual(try origin(processTable: table).session, "unknown")
     }
 
-    func testPaseoAgentIdIsReadFromTheEnvironment() throws {
-        let id = "7f3684f0-a86f-4b96-b44b-7e44d5e8e72c"
-        XCTAssertEqual(try origin(environment: ["PASEO_AGENT_ID": id]).paseoAgentId, id)
-    }
-
+    /// A set id takes the agent path, where the card never sees the Origin; NotaryPathTests checks it reaches the notary.
     func testPaseoAgentIdIsNilWhenTheVariableIsAbsentOrEmpty() throws {
         XCTAssertNil(try origin().paseoAgentId)
         XCTAssertNil(try origin(environment: ["PASEO_AGENT_ID": ""]).paseoAgentId)
