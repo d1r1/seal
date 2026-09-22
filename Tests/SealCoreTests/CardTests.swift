@@ -12,7 +12,7 @@ final class CardTests: XCTestCase {
         let stat = stats ?? [" a.swift | 4 ++--\n b.swift | 6 ++++--\n 2 files changed, 6 insertions(+), 4 deletions(-)"]
         let changes = zip(parents.isEmpty ? [nil] : parents.map(Optional.some), stat).map { ChangeSummary(parent: $0, stat: $1) }
         return SigningRequest(origin: Origin(session: "s", directory: "/Users/me/dev/fluent-connect-service", command: "git commit"),
-                              object: .commit(commit), message: message, branch: branch, changes: changes, keyHolder: .group,
+                              object: .commit(commit), message: message, branch: branch, changes: changes, keyHolder: .group, namespace: "git", keyLine: nil,
                               arguments: [], bufferFile: URL(fileURLWithPath: "/tmp/buffer"))
     }
 
@@ -102,7 +102,7 @@ final class CardTests: XCTestCase {
         let request = SigningRequest(origin: Origin(session: "s", directory: "/x/repo", command: "git tag"), object: .tag(tag),
                                      message: "release\n", branch: "main",
                                      changes: [ChangeSummary(parent: "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1", stat: " a | 1 +\n 1 file changed, 1 insertion(+)")],
-                                     keyHolder: .personal, arguments: [], bufferFile: URL(fileURLWithPath: "/tmp/b"))
+                                     keyHolder: .personal, namespace: "git", keyLine: nil, arguments: [], bufferFile: URL(fileURLWithPath: "/tmp/b"))
         let card = Card(request)
         XCTAssertEqual(card.header, "repo · tag v1.2.0")
         XCTAssertEqual(card.summary, "1 file · +1 −0 · tag → commit c3d4e5f")

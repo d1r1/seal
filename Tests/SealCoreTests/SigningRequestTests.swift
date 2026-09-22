@@ -89,6 +89,17 @@ final class SigningRequestTests: XCTestCase {
         XCTAssertEqual(exit.status, 3)
     }
 
+    func testMissingNamespaceExitsThreeWithoutOpeningReview() throws {
+        let request = try repo.signingRequest(forCommitWithMessage: "no namespace")
+        let arguments = request.arguments.filter { $0 != "-n" && $0 != "git" }
+        var reviewOpened = false
+
+        let exit = Seal.run(arguments: arguments, environment: repo.environment, workingDirectory: repo.directory) { _ in reviewOpened = true; return .approval() }
+
+        XCTAssertEqual(exit, Exit(status: 3, message: "seal: malformed request: no -n namespace given"))
+        XCTAssertFalse(reviewOpened)
+    }
+
     func testUnreachableKeyHolderExitsTwoWithSSHKeygenMessage() throws {
         let request = try repo.signingRequest(forCommitWithMessage: "no key")
         let arguments = request.arguments.map { $0 == repo.privateKey.path ? "/nonexistent/key" : $0 }

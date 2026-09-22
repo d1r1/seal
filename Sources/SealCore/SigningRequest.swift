@@ -17,6 +17,11 @@ public struct SigningRequest: Equatable {
     public let changes: [ChangeSummary]
     /// The Key holder this request goes to: the group when `-f` names the group key, the personal key otherwise.
     public let keyHolder: KeyHolderKind
+    /// The `-n` value git gave, `git` for commits and tags; the notary signs with it.
+    let namespace: String
+    /// The contents of the `-f` public key file, one line, trailing newline stripped; nil when the file cannot be
+    /// read as text (for the personal key `-f` may name a private key file, which only `ssh-keygen` reads).
+    let keyLine: String?
 
     /// The arguments git gave for `-Y sign`, handed to the Key holder unchanged (`-U` selects the agent).
     let arguments: [String]
@@ -29,6 +34,7 @@ public struct SigningRequest: Equatable {
     /// Reads the arguments git passes for `-Y sign` and parses the object body in the buffer file.
     static func parse(arguments: [String], origin: Origin, in repository: Repository, group: GroupKey) throws -> SigningRequest {
         var publicKeyFile: String?
+        var namespace: String?
         var positional: [String] = []
         var index = arguments.startIndex
         while index < arguments.endIndex {
@@ -40,12 +46,14 @@ public struct SigningRequest: Equatable {
                 index += 1
                 guard index < arguments.endIndex else { throw Malformed(reason: "option \(argument) has no value") }
                 if argument == "-f" { publicKeyFile = arguments[index] }
+                if argument == "-n" { namespace = arguments[index] }
             } else {
                 positional.append(argument)
             }
             index += 1
         }
         guard let publicKeyFile else { throw Malformed(reason: "no -f key file given") }
+        guard let namespace else { throw Malformed(reason: "no -n namespace given") }
         guard positional.count == 1, let bufferPath = positional.first else {
             throw Malformed(reason: "expected exactly one buffer file, got \(positional.count)")
         }
@@ -66,7 +74,15 @@ public struct SigningRequest: Equatable {
         }
         return SigningRequest(origin: origin, object: parsed.object, message: parsed.message, branch: repository.branch(),
                               changes: changes, keyHolder: group.isGroupKey(fileAt: publicKeyFile) ? .group : .personal,
+                              namespace: namespace, keyLine: keyLine(fileAt: publicKeyFile),
                               arguments: arguments, bufferFile: bufferFile)
+    }
+
+    private static func keyLine(fileAt path: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: path), let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return text.hasSuffix("\n") ? String(text.dropLast()) : text
     }
 }
 
