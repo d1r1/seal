@@ -9,7 +9,7 @@ One invocation of Seal by git to sign a single object (a commit or a tag). What 
 _Avoid_: prompt, signing call, commit request
 
 **Origin**:
-Where a **Signing request** came from: the **Session** it was issued in, the directory, and the git command line that triggered it.
+Where a **Signing request** came from: the **Session** it was issued in, the directory, the git command line that triggered it, and the Paseo agent id (`PASEO_AGENT_ID`, when set and not empty). The agent id selects the **Agent path** and authenticates nothing.
 _Avoid_: caller, context, source
 
 **Session**:
@@ -57,6 +57,14 @@ _Avoid_: approval, sign-off, review result
 The `seal-frost` executable next to `seal`: the dealer that generates the **Group key** and the coordinator that runs both FROST rounds and writes the SSHSIG. **Shares** reach it through pipes only.
 _Avoid_: signer, backend
 
+**Notary**:
+A local service under the author's account (Desk `bin/notary`) that listens on `~/Library/Application Support/notary/notary.sock`, holds one plain `ssh-ed25519` key, and signs or refuses each request it is sent (seal-frost ADR 0003). The protocol is the contract in `~/dev/ws/desk/docs/notary-protocol.md`.
+_Avoid_: signing server, daemon
+
+**Agent path**:
+What Seal does with a **Signing request** whose **Origin** carries a Paseo agent id: it forwards the request to the **Notary** as one JSON line and writes the signature the notary returns to `<buffer>.sig`. No **Card** opens and no **Approval** is asked for; the notary's refusal or error ends it with the same exit statuses as the card path. It applies whatever key `-f` names.
+_Avoid_: dialog path, headless mode
+
 **Pass-through**:
 Any `gpg.ssh.program` mode other than signing (`verify`, `find-principals`, `check-novalidate`, `match-principals`), which Seal hands to `ssh-keygen` unchanged.
 _Avoid_: proxy, delegation
@@ -65,6 +73,7 @@ _Avoid_: proxy, delegation
 
 - A **Signing request** gets exactly one **Card** and is signed only after one **Approval**; there is no approval that covers more than one request.
 - **Approval** gates; the **Key holder** signs. For the **Group key** Seal is both the gate and one of the two **Share** holders on the path; the **User share** is the author's, unlocked by the sensor, so no signature exists without the author.
+- A **Signing request** takes either the **Card** or the **Agent path**, never both; `PASEO_AGENT_ID` alone decides which.
 - The **Group key**'s signatures and the personal key's are verified the same way; the personal key stays registered for its past signatures and for emergencies performed by hand.
 
 ## Flagged ambiguities

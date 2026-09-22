@@ -182,6 +182,16 @@ and is told to ask the author.
 This protects against an agent's shortcut, not a hostile user; the real enforcement is a "require
 signed commits" rule on the repository.
 
+## The agent path
+
+When git runs Seal from a Paseo agent (`PASEO_AGENT_ID` set and not empty), Seal opens no card: it
+forwards the request to the notary's socket, `~/Library/Application Support/notary/notary.sock`, and
+writes the signature the notary returns (seal-frost `docs/adr/0003-notary-signs-a-completed-flow.md`).
+The variable selects the path and authenticates nothing; the notary decides. A refusal exits 1 with
+`seal: signing denied: <reason>`; a notary error, a malformed answer, or no notary listening exits 2
+with `seal: notary: <reason>` or `seal: notary socket not found at <path>`. Terminal commits are
+unchanged. The protocol is Desk's `docs/notary-protocol.md`.
+
 ## Using it from an agent
 
 | Outcome | What the agent sees | What it should do |
@@ -196,8 +206,8 @@ signed commits" rule on the repository.
 | Status | Meaning | stderr |
 | --- | --- | --- |
 | 0 | Signed | |
-| 1 | No Approval: denied, window closed, Touch ID cancelled, or git exited before a decision | `seal: signing denied` or `seal: git exited before a decision was made` |
-| 2 | Key holder failure: the helper failed or a share is missing (`seal-frost`), the sealed share would not open for a reason other than a cancel, or `ssh-keygen` could not sign (agent unreachable) | `seal: seal-frost exited N: <message>`, `seal: cannot unwrap the user share: <reason>`, `seal: ssh-keygen exited N: <message>` |
+| 1 | No Approval: denied, window closed, Touch ID cancelled, or git exited before a decision; on the agent path, the notary refused | `seal: signing denied`, `seal: git exited before a decision was made`, or `seal: signing denied: <reason>` |
+| 2 | Key holder failure: the helper failed or a share is missing (`seal-frost`), the sealed share would not open for a reason other than a cancel, `ssh-keygen` could not sign (agent unreachable), or on the agent path the notary failed, answered malformed, or is not listening | `seal: seal-frost exited N: <message>`, `seal: cannot unwrap the user share: <reason>`, `seal: ssh-keygen exited N: <message>`, `seal: notary: <reason>`, `seal: notary socket not found at <path>` |
 | 3 | Malformed request: unparseable object body or missing arguments | `seal: malformed request: <reason>` |
 
 Every other `-Y` mode (`verify`, `find-principals`, `check-novalidate`, `match-principals`) is handed to
