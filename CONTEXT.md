@@ -71,7 +71,7 @@ _Avoid_: proxy, delegation
 
 ## Relationships
 
-- A **Signing request** gets exactly one **Card** and is signed only after one **Approval**; there is no approval that covers more than one request.
+- On the card path (no Paseo agent id) a **Signing request** gets exactly one **Card** and is signed only after one **Approval**; there is no approval that covers more than one request. On the **Agent path** there is no **Card**; the **Notary** decides.
 - **Approval** gates; the **Key holder** signs. For the **Group key** Seal is both the gate and one of the two **Share** holders on the path; the **User share** is the author's, unlocked by the sensor, so no signature exists without the author.
 - A **Signing request** takes either the **Card** or the **Agent path**, never both; `PASEO_AGENT_ID` alone decides which.
 - The **Group key**'s signatures and the personal key's are verified the same way; the personal key stays registered for its past signatures and for emergencies performed by hand.

@@ -1,12 +1,13 @@
 # Seal
 
 A macOS signing program for git that shows what is about to be signed before the signature is made.
-Seal is set as `gpg.ssh.program`: on every signing request it opens a card, laid out like terminal
+Seal is set as `gpg.ssh.program`: on every signing request from a terminal it opens a card, laid out like terminal
 output, showing where the request came from (directory, branch, Claude Code session or terminal
 application), the author, who attested to the change, the commit title with the message behind an
 expander, the Problem, Why and Risks trailers, the change counts with the parent and tree hashes, and
 `diff --stat`, and asks for Touch ID inside the window. It exists so that a commit made by an agent on
-your behalf is approved with eyes open.
+your behalf is approved with eyes open. A request from a Paseo agent goes to the notary instead (see
+[The agent path](#the-agent-path)).
 
 Seal signs with a **group key**: one Ed25519 key that exists only as three FROST shares, threshold two
 (RFC 9591). Seal holds one share; your share sits on the Mac sealed to the Secure Enclave, so that Touch
