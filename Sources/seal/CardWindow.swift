@@ -96,6 +96,10 @@ final class CardWindow: NSObject, NSWindowDelegate {
                     self.finish(with: outcome)
                 }
             }
+        case nil:
+            // The agent path chooses no Key holder, and it never opens a card; nothing here can sign for it.
+            prompting = false
+            finish(with: .failure("no Key holder for the card shown"))
         case .personal:
             prompt.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
                 DispatchQueue.main.async {

@@ -189,7 +189,11 @@ signed commits" rule on the repository.
 When git runs Seal from a Paseo agent (`PASEO_AGENT_ID` set and not empty), Seal opens no card: it
 forwards the request to the notary's socket, `~/Library/Application Support/notary/notary.sock`, and
 writes the signature the notary returns (seal-frost `docs/adr/0003-notary-signs-a-completed-flow.md`).
-The variable selects the path and authenticates nothing; the notary decides. A refusal exits 1 with
+The variable selects the path and authenticates nothing; the notary decides. The request carries no key:
+the notary signs with its own key whatever `-f` names, and nothing from the key file reaches the notary.
+Nothing needs a per-repository key, so `user.signingkey` stays your personal key in every repository; git
+does not check that a signature's key matches it, and GitHub verifies the key embedded in the signature.
+A missing `-n` or `-f` is still a malformed request (exit 3). A refusal exits 1 with
 `seal: signing denied: <reason>`; a notary error, a malformed answer, or no notary listening exits 2
 with `seal: notary: <reason>` or `seal: notary socket not found at <path>`. Terminal commits are
 unchanged. The protocol is Desk's `docs/notary-protocol.md`.

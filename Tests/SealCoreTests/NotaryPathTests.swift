@@ -31,39 +31,6 @@ final class NotaryPathTests: XCTestCase {
         try repo.groupSigningRequest(body: body, groupKeyLine: try publicKeyLine())
     }
 
-    /// A request for HEAD whose `-f` file holds exactly `contents`, byte for byte.
-    private func agentSigningRequest(keyFileContents contents: String) throws -> ScratchRepository.CapturedSigningRequest {
-        let captured = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
-        let keyFile = try XCTUnwrap(captured.arguments.firstIndex(of: "-f").map { captured.arguments[$0 + 1] })
-        try Data(contents.utf8).write(to: URL(fileURLWithPath: keyFile))
-        return captured
-    }
-
-    /// The key field the notary received for a `-f` file holding `contents`, or nil when Seal sent nothing.
-    private func keySent(forKeyFile contents: String, file: StaticString = #filePath, line: UInt = #line) throws -> String? {
-        try repo.commit(message: "key file")
-        let request = try agentSigningRequest(keyFileContents: contents)
-        notary.serve(answer: signedAnswer)
-        let exit = run(request).exit
-        guard exit.status == 0 else {
-            notary.stop()
-            XCTAssertEqual(exit, Exit(status: 3, message: "seal: malformed request: -f does not name a public key"),
-                           file: file, line: line)
-            XCTAssertFalse(notary.accepted, file: file, line: line)
-            return nil
-        }
-        return try XCTUnwrap(notary.received())["key"] as? String
-    }
-
-    /// An OpenSSH key blob: the length-prefixed type string followed by arbitrary key bytes.
-    private func blob(type: String) -> String {
-        var data = Data()
-        withUnsafeBytes(of: UInt32(type.utf8.count).bigEndian) { data.append(contentsOf: $0) }
-        data.append(contentsOf: Array(type.utf8))
-        data.append(contentsOf: [0, 0, 0, 32] + Array(repeating: 7, count: 32))
-        return data.base64EncodedString()
-    }
-
     private func publicKeyLine() throws -> String {
         try String(contentsOf: repo.privateKey.appendingPathExtension("pub"), encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -117,7 +84,7 @@ final class NotaryPathTests: XCTestCase {
         XCTAssertEqual(received["v"] as? Int, 1)
         XCTAssertEqual(received["action"] as? String, "sign")
         XCTAssertEqual(received["namespace"] as? String, "git")
-        XCTAssertEqual(received["key"] as? String, try publicKeyLine())
+        XCTAssertNil(received["key"])
         XCTAssertEqual(received["body"] as? String, body)
         let origin = try XCTUnwrap(received["origin"] as? [String: Any])
         XCTAssertEqual(origin["directory"] as? String, repo.directory.path)
@@ -208,24 +175,132 @@ final class NotaryPathTests: XCTestCase {
                                   exit: Exit(status: 2, message: "seal: notary: malformed response: no ok"))
     }
 
-    func testAPrivateKeyFileIsNeverSentToTheNotary() throws {
-        try repo.commit(message: "private key path")
-        // The scratch repository's `-f` names the private key file, as a path in `user.signingkey` may.
-        let request = try repo.signingRequestForHead()
-        notary.serve(answer: signedAnswer)
-
-        let outcome = run(request)
-        notary.stop()
-
-        XCTAssertEqual(outcome.exit, Exit(status: 3, message: "seal: malformed request: -f does not name a public key"))
-        XCTAssertFalse(outcome.reviewed)
-        XCTAssertFalse(notary.accepted)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: request.signatureFile.path))
-    }
-
     func testAZeroOkExitsTwoAsMalformed() throws {
         try assertRefusedOrFailed(answer: #"{"v":1,"ok":0,"status":"refused","reason":"numeric ok"}"#,
                                   exit: Exit(status: 2, message: "seal: notary: malformed response: no ok"))
+    }
+
+    /// The notary signs with its own key whatever `-f` names: the request carries no key, the card never opens,
+    /// and the signature the notary returns is written.
+    private func assertSignedByTheNotaryWithoutAKey(_ request: ScratchRepository.CapturedSigningRequest,
+                                                    group: GroupKey = GroupKey(),
+                                                    file: StaticString = #filePath, line: UInt = #line) throws {
+        notary.serve(answer: signedAnswer)
+        var reviewed = false
+
+        let exit = Seal.run(arguments: request.arguments, environment: agentEnvironment, workingDirectory: repo.directory,
+                            group: group, notary: NotarySocket(path: notary.path)) { _ in
+            reviewed = true
+            return .denial
+        }
+
+        XCTAssertEqual(exit, Exit(status: 0), file: file, line: line)
+        XCTAssertFalse(reviewed, file: file, line: line)
+        let received = try XCTUnwrap(notary.received(), file: file, line: line)
+        XCTAssertNil(received["key"], file: file, line: line)
+        XCTAssertNoThrow(try repo.verify(request), file: file, line: line)
+    }
+
+    func testAPrivateKeyPathInDashFIsIgnoredOnTheAgentPath() throws {
+        try repo.commit(message: "private key path")
+        // The scratch repository's `-f` names the private key file, as a path in `user.signingkey` may.
+        try assertSignedByTheNotaryWithoutAKey(try repo.signingRequestForHead())
+    }
+
+    func testTheGroupKeyInDashFIsIgnoredOnTheAgentPath() throws {
+        try repo.commit(message: "group key")
+        let groupKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINL/dCjju78o0IPU3EmXkTmC1cruJTYly6+FEdV4W80Y seal-group"
+        let group = try groupKey(line: groupKeyLine)
+        let request = try repo.groupSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"),
+                                                   groupKeyLine: groupKeyLine)
+
+        try assertSignedByTheNotaryWithoutAKey(request, group: group)
+    }
+
+    func testADashFPathThatDoesNotExistIsIgnoredOnTheAgentPath() throws {
+        try repo.commit(message: "no key file")
+        var request = try repo.signingRequestForHead()
+        let keyIndex = try XCTUnwrap(request.arguments.firstIndex(of: "-f")) + 1
+        var arguments = request.arguments
+        arguments[keyIndex] = repo.directory.appendingPathComponent("no-such-key-\(UUID().uuidString)").path
+        request = ScratchRepository.CapturedSigningRequest(arguments: arguments, bufferFile: request.bufferFile)
+
+        try assertSignedByTheNotaryWithoutAKey(request)
+    }
+
+    /// The `-f` file is never opened on the agent path: the key file's access time is unchanged by a run from
+    /// an agent, while the same run from the terminal moves it. The control matters twice over: it is what
+    /// makes an unchanged time mean "not opened" rather than "this filesystem does not record reads", and the
+    /// read it catches is the one this Issue removes, of a file that may be a private key.
+    func testTheKeyFileIsNeverOpenedOnTheAgentPath() throws {
+        try repo.commit(message: "unopened key file")
+        let groupKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINL/dCjju78o0IPU3EmXkTmC1cruJTYly6+FEdV4W80Y seal-group"
+        let group = try groupKey(line: groupKeyLine)
+        let body = try repo.git("cat-file", "commit", "HEAD")
+        let fromAnAgent = try repo.groupSigningRequest(body: body, groupKeyLine: groupKeyLine)
+        let fromTheTerminal = try repo.groupSigningRequest(body: body, groupKeyLine: groupKeyLine)
+        let agentKeyFile = try keyFile(of: fromAnAgent)
+        let terminalKeyFile = try keyFile(of: fromTheTerminal)
+        let beforeTheAgent = try accessTime(of: agentKeyFile)
+        let beforeTheTerminal = try accessTime(of: terminalKeyFile)
+        notary.serve(answer: signedAnswer)
+
+        let agentExit = Seal.run(arguments: fromAnAgent.arguments, environment: agentEnvironment,
+                                 workingDirectory: repo.directory, group: group,
+                                 notary: NotarySocket(path: notary.path)) { _ in .denial }
+        // The card path chooses a Key holder, which is what reads the key file; the Denial stops it there.
+        let terminalExit = Seal.run(arguments: fromTheTerminal.arguments, environment: repo.environment,
+                                    workingDirectory: repo.directory, group: group,
+                                    notary: NotarySocket(path: notary.path)) { _ in .denial }
+
+        XCTAssertEqual(agentExit, Exit(status: 0))
+        XCTAssertEqual(terminalExit, Exit(status: 1, message: "seal: signing denied"))
+        XCTAssertEqual(try accessTime(of: agentKeyFile), beforeTheAgent)
+        XCTAssertGreaterThan(try accessTime(of: terminalKeyFile), beforeTheTerminal)
+        XCTAssertNil(try XCTUnwrap(notary.received())["key"])
+    }
+
+    private func keyFile(of request: ScratchRepository.CapturedSigningRequest) throws -> String {
+        try XCTUnwrap(request.arguments.firstIndex(of: "-f").map { request.arguments[$0 + 1] })
+    }
+
+    /// When the file was last read, to the nanosecond the filesystem records.
+    private func accessTime(of path: String) throws -> TimeInterval {
+        var status = stat()
+        guard lstat(path, &status) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        return TimeInterval(status.st_atimespec.tv_sec) + TimeInterval(status.st_atimespec.tv_nsec) / 1e9
+    }
+
+    /// A request from an agent chooses no Key holder; the same `-f` file on the card path names the group key,
+    /// so the nil is the path's doing and not an unreadable file.
+    func testAnAgentsRequestResolvesNoKeyHolder() throws {
+        try repo.commit(message: "no key holder")
+        let groupKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINL/dCjju78o0IPU3EmXkTmC1cruJTYly6+FEdV4W80Y seal-group"
+        let group = try groupKey(line: groupKeyLine)
+        let request = try repo.groupSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"),
+                                                   groupKeyLine: groupKeyLine)
+        let repository = Repository(workingDirectory: repo.directory, environment: repo.environment)
+
+        let fromAnAgent = try SigningRequest.parse(arguments: request.arguments, origin: origin(paseoAgentId: agentId),
+                                                   in: repository, group: group)
+        let fromTheTerminal = try SigningRequest.parse(arguments: request.arguments, origin: origin(paseoAgentId: nil),
+                                                       in: repository, group: group)
+
+        XCTAssertNil(fromAnAgent.keyHolder)
+        XCTAssertEqual(fromTheTerminal.keyHolder, .group)
+    }
+
+    private func origin(paseoAgentId: String?) -> Origin {
+        Origin(session: "s", directory: repo.directory.path, command: "git commit", paseoAgentId: paseoAgentId)
+    }
+
+    /// A group key home holding `line` as its public key, so `-f` files are compared against it.
+    private func groupKey(line: String) throws -> GroupKey {
+        let directory = repo.directory.appendingPathComponent("group-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let group = GroupKey(directory: directory)
+        try (line + "\n").write(to: group.publicKeyFile, atomically: true, encoding: .utf8)
+        return group
     }
 
     func testAPrivateKeyFileTakesTheCardPathUnchangedWithoutAnAgentId() throws {
@@ -237,29 +312,6 @@ final class NotaryPathTests: XCTestCase {
 
         XCTAssertEqual(outcome, Exit(status: 0))
         XCTAssertNoThrow(try repo.verify(request))
-    }
-
-    func testAKeyFileWhoseKeyIsNotBase64IsNeverSentToTheNotary() throws {
-        try repo.commit(message: "bad key")
-        let request = try repo.groupSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"),
-                                                   groupKeyLine: "ssh-ed25519 not*base64 test@seal")
-        notary.serve(answer: signedAnswer)
-
-        let outcome = run(request)
-        notary.stop()
-
-        XCTAssertEqual(outcome.exit, Exit(status: 3, message: "seal: malformed request: -f does not name a public key"))
-        XCTAssertFalse(notary.accepted)
-    }
-
-    func testAPublicKeyFileWithTrailingBlankLinesSendsOnlyTheKeyLine() throws {
-        try repo.commit(message: "trailing blank line")
-        let request = try repo.groupSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"),
-                                                   groupKeyLine: try publicKeyLine() + "\n  ")
-        notary.serve(answer: signedAnswer)
-
-        XCTAssertEqual(run(request).exit, Exit(status: 0))
-        XCTAssertEqual(try XCTUnwrap(notary.received())["key"] as? String, try publicKeyLine())
     }
 
     func testAMalformedRequestFromAnAgentLeavesNoStaleSignature() throws {
@@ -275,6 +327,24 @@ final class NotaryPathTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: captured.signatureFile.path))
     }
 
+    func testARequestWithoutDashFFromAnAgentIsMalformedAndLeavesNoStaleSignature() throws {
+        try repo.commit(message: "no key file option")
+        let captured = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
+        try Data("stale".utf8).write(to: captured.signatureFile)
+        let keyIndex = try XCTUnwrap(captured.arguments.firstIndex(of: "-f"))
+        var arguments = captured.arguments
+        arguments.removeSubrange(keyIndex...(keyIndex + 1))
+        notary.serve(answer: signedAnswer)
+
+        let outcome = Seal.run(arguments: arguments, environment: agentEnvironment, workingDirectory: repo.directory,
+                               notary: NotarySocket(path: notary.path)) { _ in .denial }
+        notary.stop()
+
+        XCTAssertEqual(outcome, Exit(status: 3, message: "seal: malformed request: no -f key file given"))
+        XCTAssertFalse(notary.accepted)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: captured.signatureFile.path))
+    }
+
     func testADanglingOptionAfterTheBufferLeavesNoStaleSignature() throws {
         try repo.commit(message: "dangling option")
         let captured = try agentSigningRequest(body: try repo.git("cat-file", "commit", "HEAD"))
@@ -285,42 +355,6 @@ final class NotaryPathTests: XCTestCase {
 
         XCTAssertEqual(outcome, Exit(status: 3, message: "seal: malformed request: option -n has no value"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: captured.signatureFile.path))
-    }
-
-    func testATabSeparatedPublicKeyLineIsSent() throws {
-        let tabbed = try publicKeyLine().replacingOccurrences(of: " ", with: "\t")
-        XCTAssertEqual(try keySent(forKeyFile: tabbed + "\n"), tabbed)
-    }
-
-    func testACRLFEndedPublicKeyLineIsSentWithoutTheLineEnd() throws {
-        XCTAssertEqual(try keySent(forKeyFile: try publicKeyLine() + "\r\n"), try publicKeyLine())
-    }
-
-    func testTwoCRLFSeparatedKeyLinesAreNeverSent() throws {
-        let key = try publicKeyLine()
-        XCTAssertNil(try keySent(forKeyFile: key + "\r\n" + key + "\r\n"))
-    }
-
-    func testTrailingSpacesInTheCommentAreKept() throws {
-        let key = try publicKeyLine() + " a comment  "
-        XCTAssertEqual(try keySent(forKeyFile: key + "\n"), key)
-    }
-
-    func testABlobThatIsNotAKeyOfItsTypeIsNeverSent() throws {
-        XCTAssertNil(try keySent(forKeyFile: "ssh-ed25519 YQ== fake\n"))
-    }
-
-    func testAnUnknownTypeWithoutAMatchingBlobIsNeverSent() throws {
-        XCTAssertNil(try keySent(forKeyFile: "sk-nonexistent YQ== fake\n"))
-    }
-
-    func testABlobOfAnotherTypeIsNeverSent() throws {
-        XCTAssertNil(try keySent(forKeyFile: "ssh-rsa \(blob(type: "ssh-ed25519")) mismatched\n"))
-    }
-
-    func testASecurityKeyLineWithAMatchingBlobIsSent() throws {
-        let key = "sk-ssh-ed25519@openssh.com \(blob(type: "sk-ssh-ed25519@openssh.com")) yubikey"
-        XCTAssertEqual(try keySent(forKeyFile: key + "\n"), key)
     }
 
     func testAnAbsentSocketExitsTwoNamingThePathAndLeavesNoSignature() throws {

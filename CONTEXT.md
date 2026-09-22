@@ -25,7 +25,7 @@ The author's decision to sign, given inside the **Card** with Touch ID (or the d
 _Avoid_: passkey, authorization, consent
 
 **Key holder**:
-What produces the signature once **Approval** is given. For the **Group key** it is the FROST group: Seal's **Mac share** and the **User share**, aggregated by the helper `seal-frost`. For the personal key it is the 1Password SSH agent through `ssh-keygen -Y sign`, and Seal never sees that key. The key git names with `-f` selects the holder.
+What produces the signature once **Approval** is given. For the **Group key** it is the FROST group: Seal's **Mac share** and the **User share**, aggregated by the helper `seal-frost`. For the personal key it is the 1Password SSH agent through `ssh-keygen -Y sign`, and Seal never sees that key. On the card path the key git names with `-f` selects the holder; on the **Agent path** the **Notary** is the holder, with its own key, whatever `-f` names.
 _Avoid_: signer, backend, key store
 
 **Group key**:
@@ -62,7 +62,7 @@ A local service under the author's account (Desk `bin/notary`) that listens on `
 _Avoid_: signing server, daemon
 
 **Agent path**:
-What Seal does with a **Signing request** whose **Origin** carries a Paseo agent id: it forwards the request to the **Notary** as one JSON line and writes the signature the notary returns to `<buffer>.sig`. No **Card** opens and no **Approval** is asked for; the notary's refusal or error ends it with the same exit statuses as the card path. It applies whatever key `-f` names.
+What Seal does with a **Signing request** whose **Origin** carries a Paseo agent id: it forwards the request to the **Notary** as one JSON line and writes the signature the notary returns to `<buffer>.sig`. No **Card** opens and no **Approval** is asked for; the notary's refusal or error ends it with the same exit statuses as the card path. The request carries no key: the notary signs with its own key whatever `-f` names, so `user.signingkey` stays the personal key in every repository.
 _Avoid_: dialog path, headless mode
 
 **Pass-through**:
@@ -74,7 +74,7 @@ _Avoid_: proxy, delegation
 - On the card path (no Paseo agent id) a **Signing request** gets exactly one **Card** and is signed only after one **Approval**; there is no approval that covers more than one request. On the **Agent path** there is no **Card**; the **Notary** decides.
 - **Approval** gates; the **Key holder** signs. For the **Group key** Seal is both the gate and one of the two **Share** holders on the path; the **User share** is the author's, unlocked by the sensor, so no signature exists without the author.
 - A **Signing request** takes either the **Card** or the **Agent path**, never both; `PASEO_AGENT_ID` alone decides which.
-- The **Group key**'s signatures and the personal key's are verified the same way; the personal key stays registered for its past signatures and for emergencies performed by hand.
+- The **Group key**'s signatures and the personal key's are verified the same way; the personal key stays the value of `user.signingkey` in every repository and signs on the card path wherever `-f` does not name the **Group key**.
 
 ## Flagged ambiguities
 

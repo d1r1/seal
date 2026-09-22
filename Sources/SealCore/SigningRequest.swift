@@ -16,16 +16,13 @@ public struct SigningRequest: Equatable {
     /// signed body so it cannot differ from what is signed.
     public let changes: [ChangeSummary]
     /// The Key holder this request goes to: the group when `-f` names the group key, the personal key otherwise.
-    public let keyHolder: KeyHolderKind
+    /// Nil on the agent path, where the Notary signs with its own key: no holder is chosen there, and choosing
+    /// one is the only thing that reads the `-f` file.
+    public let keyHolder: KeyHolderKind?
     /// The object body exactly as git wrote it to the buffer file; the notary receives it verbatim.
     let body: String
     /// The `-n` value git gave, `git` for commits and tags; the notary signs with it.
     let namespace: String
-    /// The contents of the `-f` public key file, one line, trailing newline stripped; nil unless the file holds a
-    /// single OpenSSH public key line. For the personal key `-f` may name a private key file, which only
-    /// `ssh-keygen` reads; it must never reach the notary.
-    let keyLine: String?
-
     /// The arguments git gave for `-Y sign`, handed to the Key holder unchanged (`-U` selects the agent).
     let arguments: [String]
     let bufferFile: URL
@@ -59,40 +56,17 @@ public struct SigningRequest: Equatable {
             changes = repository.changes(ofTagged: tag)
         }
         return SigningRequest(origin: origin, object: parsed.object, message: parsed.message, branch: repository.branch(),
-                              changes: changes, keyHolder: group.isGroupKey(fileAt: publicKeyFile) ? .group : .personal,
-                              body: body, namespace: namespace, keyLine: keyLine(fileAt: publicKeyFile),
+                              changes: changes, keyHolder: keyHolder(named: publicKeyFile, origin: origin, group: group),
+                              body: body, namespace: namespace,
                               arguments: arguments, bufferFile: bufferFile)
     }
 
-    /// One OpenSSH public key line, as `ssh-keygen` reads it: a key type, the base64 blob, an optional comment,
-    /// separated by spaces or tabs, where the blob starts with its own length-prefixed type. Only whitespace may
-    /// follow on later lines. The line comes back with just its line end (`\n` or `\r\n`) removed. Anything
-    /// else, a private key file included, reads as nil.
-    private static func keyLine(fileAt path: String) -> String? {
-        guard let data = FileManager.default.contents(atPath: path), let text = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        // Scalars, not Characters: `\r\n` is a single Character and would hide a line break.
-        let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-            let scalars = line.last == "\r" ? line.dropLast() : line
-            return String(String.UnicodeScalarView(scalars))
-        }
-        guard let line = lines.first,
-              lines.dropFirst().allSatisfy({ $0.unicodeScalars.allSatisfy(CharacterSet.whitespaces.contains) })
-        else { return nil }
-        let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard tokens.count >= 2, let blob = Data(base64Encoded: String(tokens[1])),
-              blobHeader(blob) == Array(tokens[0].utf8) else { return nil }
-        return line
-    }
-
-    /// The type string at the start of a key blob: a big-endian uint32 length, then that many bytes.
-    private static func blobHeader(_ blob: Data) -> [UInt8]? {
-        let bytes = Array(blob)
-        guard bytes.count >= 4 else { return nil }
-        let length = bytes[0..<4].reduce(0) { $0 << 8 | Int($1) }
-        guard length > 0, bytes.count >= 4 + length else { return nil }
-        return Array(bytes[4..<(4 + length)])
+    /// Which Key holder the `-f` key file selects, by comparing it with the group key. The agent path gets none:
+    /// the notary signs with its own key there, and the contract says the key file is not read at all, so the
+    /// comparison, which is what reads it, is left out rather than answered with a holder that never signs.
+    private static func keyHolder(named path: String, origin: Origin, group: GroupKey) -> KeyHolderKind? {
+        guard origin.paseoAgentId == nil else { return nil }
+        return group.isGroupKey(fileAt: path) ? .group : .personal
     }
 }
 

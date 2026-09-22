@@ -74,14 +74,13 @@ public struct NotarySocket {
 
 /// The agent path: the Signing request goes to the notary and its answer decides the exit. No card, no Touch ID.
 enum Notary {
-    /// The request line of the contract. `card` is true only when the card approved the request (PER-89);
-    /// on the agent path it is false and the field is left out.
-    static func requestLine(for request: SigningRequest, keyLine: String, card: Bool) throws -> Data {
+    /// The request line of the contract. It carries no key: the notary signs with its own key, so whatever `-f`
+    /// names is ignored on the agent path and nothing from its file reaches the notary.
+    static func requestLine(for request: SigningRequest) throws -> Data {
         var origin: [String: Any] = ["directory": request.origin.directory, "branch": request.branch,
                                      "command": request.origin.command]
         origin["paseoAgentId"] = request.origin.paseoAgentId
-        if card { origin["card"] = true }
-        let object: [String: Any] = ["v": 1, "action": "sign", "namespace": request.namespace, "key": keyLine,
+        let object: [String: Any] = ["v": 1, "action": "sign", "namespace": request.namespace,
                                      "body": request.body, "origin": origin]
         return try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
     }
@@ -97,12 +96,9 @@ enum Notary {
     }
 
     private static func outcome(_ request: SigningRequest, socket: NotarySocket, signatureFile: URL) -> Exit {
-        guard let keyLine = request.keyLine else {
-            return .malformedRequest("-f does not name a public key")
-        }
         let response: Data
         do {
-            response = try socket.exchange(try requestLine(for: request, keyLine: keyLine, card: false))
+            response = try socket.exchange(try requestLine(for: request))
         } catch is NotarySocket.NotFound {
             return .notaryNotFound(at: socket.path)
         } catch let failed as NotarySocket.Failed {

@@ -80,7 +80,11 @@ public enum Seal {
             if request.origin.paseoAgentId != nil {
                 return Notary.sign(request, socket: notary)
             }
-            switch (review(request), request.keyHolder) {
+            guard let keyHolder = request.keyHolder else {
+                // Only the agent path leaves the Key holder unchosen, and it has returned just above.
+                return .keyHolderFailure("no Key holder for a request that takes the card path")
+            }
+            switch (review(request), keyHolder) {
             case (.approval(nil), .personal):
                 return KeyHolder.sign(request, environment: environment)
             case (.approval(let share?), .group):
